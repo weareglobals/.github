@@ -17,6 +17,10 @@ on:
         required: false
         type: string
         default: ./Dockerfile
+      use_codeartifact:
+        required: false
+        type: boolean
+        default: false
     secrets:
       AWS_ACCESS_KEY_ID:
         required: true
@@ -42,15 +46,36 @@ jobs:
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Build tag and push image to ECR
+      #Só roda se use_codeartifact = true
+      - name: Get CodeArtifact token
+        id: codeartifact
+        if: ${{ inputs.use_codeartifact }}
+        run: |
+          TOKEN=$(aws codeartifact get-authorization-token \
+            --domain paymode-development \
+            --domain-owner 975050328856 \
+            --region ${{ inputs.aws_region }} \
+            --query authorizationToken \
+            --output text)
+          echo "CODEARTIFACT_AUTH_TOKEN=$TOKEN" >> $GITHUB_ENV
+
+      - name: Build, tag, and push image to ECR
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           ECR_REPOSITORY: ${{ inputs.ecr_repository }}
           IMAGE_TAG: ${{ inputs.image_tag }}
         run: |
-          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG -f ${{ inputs.dockerfile }} .
+          BUILD_ARGS=""
+          if [ "${{ inputs.use_codeartifact }}" = "true" ]; then
+            echo "CodeArtifact token enabled"
+            BUILD_ARGS="--secret id=codeartifact_token,env=CODEARTIFACT_AUTH_TOKEN"
+          fi
+
+          docker build $BUILD_ARGS \
+            -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG \
+            -f ${{ inputs.dockerfile }} .
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
 
       - name: Output image URL
         run: |
-          echo "Image pushed:${{ steps.login-ecr.outputs.registry }}/${{ inputs.ecr_repository }}:${{ inputs.image_tag }}"
+          echo "Image pushed: ${{ steps.login-ecr.outputs.registry }}/${{ inputs.ecr_repository }}:${{ inputs.image_tag }}"
