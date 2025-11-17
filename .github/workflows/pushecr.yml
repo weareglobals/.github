@@ -26,9 +26,7 @@ on:
         required: true
       AWS_SECRET_ACCESS_KEY:
         required: true
-      SLACK_WEBHOOK_URL:         
-        required: false
-        
+
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
@@ -61,13 +59,89 @@ jobs:
         run: |
           echo "Image pushed:${{ steps.login-ecr.outputs.registry }}/${{ inputs.ecr_repository }}:${{ inputs.image_tag }}"
 
-      - name: Notify Slack Status
+      - name: Notify Slack Status (styled)
         if: ${{ inputs.notify_slack && always() }}
         run: |
           STATUS="${{ job.status }}"
+          COLOR="#36a64f" # verde
+          if [ "$STATUS" != "success" ]; then
+            COLOR="#ff0000" # vermelho
+          fi
 
-          curl -X POST -H 'Content-type: application/json' \
-          --data "{
-            \"text\": \"📣 Pipeline finalizado.\nStatus: *$STATUS*\nRepositório: ${{ inputs.ecr_repository }}\nTag: ${{ inputs.image_tag }}\"
-          }" \
-          ${{ secrets.SLACK_WEBHOOK_URL }}
+          WORKFLOW_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+          PAYLOAD=$(cat <<EOF
+          {
+            "attachments": [
+              {
+                "color": "$COLOR",
+                "blocks": [
+                  {
+                    "type": "header",
+                    "text": {
+                      "type": "plain_text",
+                      "text": "🚀 Pipeline Finalizado"
+                    }
+                  },
+                  {
+                    "type": "section",
+                    "fields": [
+                      {
+                        "type": "mrkdwn",
+                        "text": "*Status:*\n*$STATUS*"
+                      },
+                      {
+                        "type": "mrkdwn",
+                        "text": "*Tag:*\n${{ inputs.image_tag }}"
+                      }
+                    ]
+                  },
+                  {
+                    "type": "section",
+                    "fields": [
+                      {
+                        "type": "mrkdwn",
+                        "text": "*Repositório:*\n${{ inputs.ecr_repository }}"
+                      },
+                      {
+                        "type": "mrkdwn",
+                        "text": "*Branch:*\n${{ github.ref_name }}"
+                      }
+                    ]
+                  },
+                  {
+                    "type": "section",
+                    "fields": [
+                      {
+                        "type": "mrkdwn",
+                        "text": "*Autor:*\n${{ github.actor }}"
+                      },
+                      {
+                        "type": "mrkdwn",
+                        "text": "*Commit:*\n${{ github.sha }}"
+                      }
+                    ]
+                  },
+                  {
+                    "type": "actions",
+                    "elements": [
+                      {
+                        "type": "button",
+                        "text": {
+                          "type": "plain_text",
+                          "text": "🔍 Ver Pipeline"
+                        },
+                        "url": "$WORKFLOW_URL"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+          EOF
+          )
+
+          curl -X POST -H "Content-type: application/json" \
+            --data "$PAYLOAD" \
+            ${{ secrets.SLACK_WEBHOOK_URL }}
