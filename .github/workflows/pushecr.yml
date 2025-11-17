@@ -73,6 +73,9 @@ jobs:
           WORKFLOW_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           REPO_URL="https://github.com/${{ github.repository }}"
 
+          LOGS_URL="http://k8s-monitori-promethe-d54735ffe4-1157155869.us-east-1.elb.amazonaws.com/a/grafana-lokiexplore-app/explore?from=now-1h&to=now&var-ds=P8E80F9AEF21F6940&var-filters=&patterns=%5B%5D&timezone=browser&var-primary_label=service_name%7C%3D~%7C.%2B&var-fields=&var-levels=&var-metadata=&var-all-fields=&var-patterns=&var-lineFilterV2=&var-lineFilters=&var-filters_replica="
+          ARGO_URL="https://argo.paymode.weareglobals.com"
+
           PAYLOAD=$(cat <<EOF
           {
             "attachments": [
@@ -125,15 +128,13 @@ jobs:
                       }
                     ]
                   },
-
                   {
                     "type": "section",
                     "text": {
                       "type": "mrkdwn",
-                      "text": "⚠️ *Observação Importante:*\n• Se você usa a tag *latest*, lembre que precisa **restartar a app no cluster**.\n• Se você usa *versão*, lembre de **trocar a versão no \`deployment.yaml\`** e também no caminho **\`./.github\` dentro do workflow do seu pipe**."
+                      "text": "⚠️ *Observação Importante:*\n• Se você usa a tag *latest*, lembre que precisa reiniciar a app no cluster.\n• Se você usa versão, lembre de trocar a versão no \`deployment.yaml\` e também no caminho \`./.github\` dentro do workflow do seu pipe."
                     }
                   },
-
                   {
                     "type": "actions",
                     "elements": [
@@ -152,6 +153,22 @@ jobs:
                           "text": "📁 Ver Repositório"
                         },
                         "url": "$REPO_URL"
+                      },
+                      {
+                        "type": "button",
+                        "text": {
+                          "type": "plain_text",
+                          "text": "🔥 Ver Logs"
+                        },
+                        "url": "$LOGS_URL"
+                      },
+                      {
+                        "type": "button",
+                        "text": {
+                          "type": "plain_text",
+                          "text": "🚀 Ver Argo"
+                        },
+                        "url": "$ARGO_URL"
                       }
                     ]
                   }
