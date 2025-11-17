@@ -17,12 +17,18 @@ on:
         required: false
         type: string
         default: ./Dockerfile
+      notify_slack:              
+        required: false
+        type: boolean
+        default: false
     secrets:
       AWS_ACCESS_KEY_ID:
         required: true
       AWS_SECRET_ACCESS_KEY:
         required: true
-
+      SLACK_WEBHOOK_URL:         
+        required: false
+        
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
@@ -54,3 +60,14 @@ jobs:
       - name: Output image URL
         run: |
           echo "Image pushed:${{ steps.login-ecr.outputs.registry }}/${{ inputs.ecr_repository }}:${{ inputs.image_tag }}"
+
+      - name: Notify Slack Status
+        if: ${{ inputs.notify_slack && always() }}
+        run: |
+          STATUS="${{ job.status }}"
+
+          curl -X POST -H 'Content-type: application/json' \
+          --data "{
+            \"text\": \"📣 Pipeline finalizado.\nStatus: *$STATUS*\nRepositório: ${{ inputs.ecr_repository }}\nTag: ${{ inputs.image_tag }}\"
+          }" \
+          ${{ secrets.SLACK_WEBHOOK_URL }}

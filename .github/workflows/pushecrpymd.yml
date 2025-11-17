@@ -21,11 +21,17 @@ on:
         required: false
         type: boolean
         default: false
+      notify_slack:              
+        required: false
+        type: boolean
+        default: false
     secrets:
       AWS_ACCESS_KEY_ID:
         required: true
       AWS_SECRET_ACCESS_KEY:
         required: true
+      SLACK_WEBHOOK_URL:         
+        required: false
 
 jobs:
   build-and-push:
@@ -46,7 +52,7 @@ jobs:
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
-      #Só roda se use_codeartifact = true
+      # Só roda se use_codeartifact = true
       - name: Get CodeArtifact token
         id: codeartifact
         if: ${{ inputs.use_codeartifact }}
@@ -74,8 +80,21 @@ jobs:
           docker build $BUILD_ARGS \
             -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG \
             -f ${{ inputs.dockerfile }} .
+
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
 
       - name: Output image URL
         run: |
           echo "Image pushed: ${{ steps.login-ecr.outputs.registry }}/${{ inputs.ecr_repository }}:${{ inputs.image_tag }}"
+
+
+      - name: Notify Slack Status
+        if: ${{ inputs.notify_slack && always() }}
+        run: |
+          STATUS="${{ job.status }}"
+
+          curl -X POST -H 'Content-type: application/json' \
+          --data "{
+            \"text\": \"📣 Pipeline finalizado.\nStatus: *$STATUS*\nRepositório: ${{ inputs.ecr_repository }}\nTag: ${{ inputs.image_tag }}\"
+          }" \
+          ${{ secrets.SLACK_WEBHOOK_URL }}
