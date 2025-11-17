@@ -71,6 +71,7 @@ jobs:
           fi
 
           WORKFLOW_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          REPO_URL="https://github.com/${{ github.repository }}"
 
           PAYLOAD=$(cat <<EOF
           {
@@ -103,7 +104,7 @@ jobs:
                     "fields": [
                       {
                         "type": "mrkdwn",
-                        "text": "*Repositório:*\n${{ inputs.ecr_repository }}"
+                        "text": "*Repositório:*\n<$REPO_URL|${{ github.repository }}>"
                       },
                       {
                         "type": "mrkdwn",
@@ -124,6 +125,15 @@ jobs:
                       }
                     ]
                   },
+
+                  {
+                    "type": "section",
+                    "text": {
+                      "type": "mrkdwn",
+                      "text": "⚠️ *Observação Importante:*\n• Se você usa a tag *latest*, lembre que precisa **restartar a app no cluster**.\n• Se você usa *versão*, lembre de **trocar a versão no \`deployment.yaml\`** e também no caminho **\`./.github\` dentro do workflow do seu pipe**."
+                    }
+                  },
+
                   {
                     "type": "actions",
                     "elements": [
@@ -134,6 +144,14 @@ jobs:
                           "text": "🔍 Ver Pipeline"
                         },
                         "url": "$WORKFLOW_URL"
+                      },
+                      {
+                        "type": "button",
+                        "text": {
+                          "type": "plain_text",
+                          "text": "📁 Ver Repositório"
+                        },
+                        "url": "$REPO_URL"
                       }
                     ]
                   }
@@ -147,3 +165,4 @@ jobs:
           curl -X POST -H "Content-type: application/json" \
             --data "$PAYLOAD" \
             ${{ secrets.SLACK_WEBHOOK_URL }}
+
