@@ -1,4 +1,4 @@
-name: Code Review com Gemini (Qodo Merge)
+name: Code Review com Gemini (Qodo Merge) #
 
 on:
   pull_request:
