@@ -2,11 +2,7 @@ name: Update Jira Status on PR Events
 run-name: Updating Jira status for '${{ github.event.pull_request.head.ref }}'.
 
 on:
-  pull_request:
-    types: [opened, closed]
-    branches:
-      - develop
-      - main
+  workflow_call:
 
 permissions:
   pull-requests: read

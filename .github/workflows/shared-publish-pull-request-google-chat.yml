@@ -2,11 +2,7 @@ name: Google Chat PR Notification
 run-name: Notifying PR '${{ github.event.pull_request.title }}' on Google Chat
 
 on:
-  pull_request:
-    types: [opened]
-    branches:
-      - develop
-      - main
+  workflow_call:
 
 jobs:
   notify-gchat:
