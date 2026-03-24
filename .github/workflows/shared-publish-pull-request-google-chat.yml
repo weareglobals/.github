@@ -42,14 +42,23 @@ jobs:
           TICKET: ${{ steps.extract.outputs.ticket }}
           JIRA_SUMMARY: ${{ steps.jira.outputs.summary }}
           USER_ID: ${{ secrets.GOOGLE_CHAT_USER_ID_TO_CODE_REVIEW }}
+          PR_AUTHOR_LOGIN: ${{ github.event.pull_request.user.login }}
+          PR_AUTHOR_NAME: ${{ github.event.pull_request.user.name }}
         run: |
           ESCAPED_PR_TITLE=$(echo "$PR_TITLE" | sed 's/"/\\"/g')
 
+          if [ -n "$PR_AUTHOR_NAME" ] && [ "$PR_AUTHOR_NAME" != "null" ]; then
+            AUTHOR_LINE="$PR_AUTHOR_NAME (@$PR_AUTHOR_LOGIN)"
+          else
+            AUTHOR_LINE="@$PR_AUTHOR_LOGIN"
+          fi
+          ESCAPED_AUTHOR=$(echo "$AUTHOR_LINE" | sed 's/"/\\"/g')
+
           if [ -n "$TICKET" ]; then
             ESCAPED_SUMMARY=$(echo "$JIRA_SUMMARY" | sed 's/"/\\"/g')
-            MESSAGE_TEXT="$ESCAPED_SUMMARY\n$ESCAPED_PR_TITLE\n\n<users/${USER_ID}>\n\n*Task:* https://weareglobals.atlassian.net/browse/$TICKET\n\n*PR:* $PR_URL"
+            MESSAGE_TEXT="$ESCAPED_SUMMARY\n$ESCAPED_PR_TITLE\n\n*Autor:* $ESCAPED_AUTHOR\n\n<users/${USER_ID}>\n\n*Task:* https://weareglobals.atlassian.net/browse/$TICKET\n\n*PR:* $PR_URL"
           else
-            MESSAGE_TEXT="$ESCAPED_PR_TITLE\n\n<users/${USER_ID}>\n\n*PR:* $PR_URL"
+            MESSAGE_TEXT="$ESCAPED_PR_TITLE\n\n*Autor:* $ESCAPED_AUTHOR\n\n<users/${USER_ID}>\n\n*PR:* $PR_URL"
           fi
 
           curl -X POST "$WEBHOOK" \
