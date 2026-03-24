@@ -1,0 +1,194 @@
+name: "Dependabot Security Alerts Monitor"
+
+on:
+  schedule:
+    - cron: '0 9 * * *'
+  workflow_dispatch:
+
+permissions:
+  security-events: read
+  contents: read
+
+jobs:
+  check-security-alerts:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: List Dependabot alerts
+        id: alerts
+        uses: actions/github-script@v8
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const REPO_OWNER = context.repo.owner;
+            const REPO_NAME = context.repo.repo;
+            
+            console.log(`Checking Dependabot alerts for ${REPO_OWNER}/${REPO_NAME}...`);
+            
+            const alerts = [];
+            let page = 1;
+            let hasMore = true;
+            
+            while (hasMore) {
+              const response = await github.rest.dependabot.listAlertsForRepo({
+                owner: REPO_OWNER,
+                repo: REPO_NAME,
+                state: 'open',
+                severity: 'critical,high',
+                per_page: 100,
+                page: page
+              });
+              
+              if (response.data.length === 0) {
+                hasMore = false;
+              } else {
+                alerts.push(...response.data);
+                page++;
+                
+                if (response.data.length < 100) {
+                  hasMore = false;
+                }
+              }
+            }
+            
+            console.log(`Found ${alerts.length} open critical/high alerts`);
+            
+            const criticalAlerts = alerts.filter(a => a.security_advisory.severity === 'critical');
+            const highAlerts = alerts.filter(a => a.security_advisory.severity === 'high');
+            
+            console.log(`Critical: ${criticalAlerts.length}, High: ${highAlerts.length}`);
+            
+            const allOpenPRs = await github.rest.pulls.list({
+              owner: REPO_OWNER,
+              repo: REPO_NAME,
+              state: 'open',
+              per_page: 100
+            });
+            
+            const dependabotPRs = allOpenPRs.data.filter(pr => pr.user.login === 'dependabot[bot]');
+            
+            console.log(`Found ${dependabotPRs.length} open Dependabot PRs`);
+            
+            const unresolvableAlerts = [];
+            const seenDependencies = new Set();
+            
+            for (const alert of alerts) {
+              const dependencyName = alert.dependency.package.name.toLowerCase();
+              const severity = alert.security_advisory.severity;
+              
+              if (seenDependencies.has(dependencyName)) {
+                continue;
+              }
+              
+              const hasOpenPR = dependabotPRs.some(pr => {
+                const prTitle = pr.title.toLowerCase();
+                const prBody = (pr.body || '').toLowerCase();
+                return prTitle.includes(dependencyName) || prBody.includes(dependencyName);
+              });
+              
+              if (!hasOpenPR) {
+                const createdAt = new Date(alert.created_at);
+                const daysSinceCreation = Math.floor((Date.now() - createdAt.getTime()) / (1000 * 60 * 60 * 24));
+                
+                const minDaysForNotification = severity === 'critical' ? 1 : 3;
+                
+                if (daysSinceCreation >= minDaysForNotification) {
+                  seenDependencies.add(dependencyName);
+                  
+                  unresolvableAlerts.push({
+                    number: alert.number,
+                    dependency: alert.dependency.package.name,
+                    ecosystem: alert.dependency.package.ecosystem,
+                    severity: severity,
+                    summary: alert.security_advisory.summary || 'N/A',
+                    created_at: alert.created_at,
+                    days_open: daysSinceCreation,
+                    html_url: alert.html_url,
+                    manifest_path: alert.dependency.manifest_path || 'N/A',
+                    vulnerable_version_range: alert.security_vulnerability.vulnerable_version_range || 'N/A'
+                  });
+                }
+              }
+            }
+            
+            unresolvableAlerts.sort((a, b) => {
+              if (a.severity === 'critical' && b.severity !== 'critical') return -1;
+              if (a.severity !== 'critical' && b.severity === 'critical') return 1;
+              return b.days_open - a.days_open;
+            });
+            
+            console.log(`Found ${unresolvableAlerts.length} alerts without open PRs`);
+            
+            core.setOutput('has-unresolvable-alerts', unresolvableAlerts.length > 0);
+            core.setOutput('alerts-count', unresolvableAlerts.length);
+            core.setOutput('alerts-json', JSON.stringify(unresolvableAlerts));
+
+      - name: Notify Google Chat
+        if: steps.alerts.outputs.has-unresolvable-alerts == 'true'
+        env:
+          ALERTS_JSON: ${{ steps.alerts.outputs.alerts-json }}
+          ALERTS_COUNT: ${{ steps.alerts.outputs.alerts-count }}
+        run: |
+          ALERTS_COUNT="$ALERTS_COUNT"
+          
+          CRITICAL_COUNT=$(echo '$ALERTS_JSON' | jq '[.[] | select(.severity == "critical")] | length')
+          HIGH_COUNT=$(echo '$ALERTS_JSON' | jq '[.[] | select(.severity == "high")] | length')
+          
+          MESSAGE="*🚨 Dependabot - Alertas de Segurança Não Resolvíveis*\n\n"
+          MESSAGE="${MESSAGE}*Total:* $ALERTS_COUNT alerta(s) sem PR aberto\n"
+          MESSAGE="${MESSAGE}  • Críticos: $CRITICAL_COUNT\n"
+          MESSAGE="${MESSAGE}  • Altos: $HIGH_COUNT\n"
+          MESSAGE="${MESSAGE}*Repositório:* ${{ github.repository }}\n"
+          MESSAGE="${MESSAGE}*Branch:* develop\n\n"
+          MESSAGE="${MESSAGE}*Detalhes:*\n\n"
+          
+          echo '$ALERTS_JSON' | jq -r '.[] | 
+            "📦 *\(.dependency)*\n" +
+            "   • Ecosystem: \(.ecosystem)\n" +
+            "   • Severidade: \(.severity | ascii_upcase)\n" +
+            "   • Versão vulnerável: \(.vulnerable_version_range)\n" +
+            "   • Manifesto: \(.manifest_path)\n" +
+            "   • Dias aberto: \(.days_open)\n" +
+            "   • [Ver alerta](" + .html_url + ")\n\n"
+          ' > /tmp/alerts_details.txt
+          
+          ALERTS_DETAILS=$(cat /tmp/alerts_details.txt)
+          MESSAGE="${MESSAGE}${ALERTS_DETAILS}"
+          
+          MESSAGE="${MESSAGE}*⚠️ Possível Causa:*\n"
+          MESSAGE="${MESSAGE}Conflito de dependências impedindo atualização automática.\n"
+          MESSAGE="${MESSAGE}A versão segura mínima não pode ser resolvida devido a restrições de versão.\n\n"
+          MESSAGE="${MESSAGE}*🔧 Ação Necessária:*\n"
+          MESSAGE="${MESSAGE}Revisão manual e resolução de conflitos de dependências."
+          
+          MESSAGE_ESCAPED=$(echo "$MESSAGE" | jq -Rs .)
+          
+          curl -X POST -H 'Content-Type: application/json' '${{ secrets.GOOGLE_CHAT_WEBHOOK }}' -d "
+          {
+            \"cardsV2\": [{
+              \"cardId\": \"dependabotSecurityAlert\",
+              \"card\": {
+                \"header\": {
+                  \"title\": \"GWS - Alertas de Segurança Não Resolvíveis\",
+                  \"subtitle\": \"Dependabot não conseguiu criar PRs automáticos\"
+                },
+                \"sections\": [{
+                  \"widgets\": [
+                    { \"textParagraph\": { \"text\": $MESSAGE_ESCAPED } },
+                    {
+                      \"buttonList\": {
+                        \"buttons\": [
+                          {
+                            \"text\": \"Ver Alertas no GitHub\",
+                            \"onClick\": { \"openLink\": { \"url\": \"https://github.com/${{ github.repository }}/security/dependabot\" } }
+                          }
+                        ]
+                      }
+                    }
+                  ]
+                }]
+              }
+            }]
+          }"

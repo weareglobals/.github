@@ -1,0 +1,250 @@
+name: Update Jira Status on PR Events
+run-name: Updating Jira status for '${{ github.event.pull_request.head.ref }}'.
+
+on:
+  pull_request:
+    types: [opened, closed]
+    branches:
+      - develop
+      - main
+
+permissions:
+  pull-requests: read
+  contents: read
+
+jobs:
+  pr-opened:
+    if: github.event_name == 'pull_request' && github.event.action == 'opened'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Extract Jira ticket from branch name
+        id: extract
+        run: |
+          BRANCH="${{ github.event.pull_request.head.ref }}"
+          TICKET=$(echo "$BRANCH" | grep -oE '[A-Z]+-[0-9]+' | head -1)
+          echo "ticket=$TICKET" >> $GITHUB_OUTPUT
+          echo "Extracted ticket: $TICKET"
+
+      - name: Login to Jira
+        if: steps.extract.outputs.ticket != ''
+        uses: atlassian/gajira-login@v3
+        env:
+          JIRA_BASE_URL: ${{ vars.JIRA_BASE_URL }}
+          JIRA_USER_EMAIL: ${{ vars.JIRA_USER_EMAIL }}
+          JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+
+      - name: Get transition ID for In Code Review
+        if: steps.extract.outputs.ticket != ''
+        id: get_transition
+        env:
+          JIRA_BASE_URL: ${{ vars.JIRA_BASE_URL }}
+          JIRA_USER_EMAIL: ${{ vars.JIRA_USER_EMAIL }}
+          JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+        run: |
+          TRANSITIONS_JSON=$(curl -s -u "$JIRA_USER_EMAIL:$JIRA_API_TOKEN" \
+            "$JIRA_BASE_URL/rest/api/3/issue/${{ steps.extract.outputs.ticket }}/transitions" \
+            -H "Accept: application/json")
+          
+          TRANSITION_ID=$(echo "$TRANSITIONS_JSON" | jq -r '.transitions[] | select(.name == "In Code Review") | .id' | head -1 | tr -d '\n' | xargs)
+          
+          if [ -z "$TRANSITION_ID" ] || [ "$TRANSITION_ID" == "null" ]; then
+            echo "Error: Transition 'In Code Review' not found"
+            echo "Available transitions:"
+            echo "$TRANSITIONS_JSON" | jq -r '.transitions[] | "\(.id): \(.name)"'
+            exit 1
+          fi
+          
+          echo "transition_id=$TRANSITION_ID" >> $GITHUB_OUTPUT
+
+      - name: Transition to Code Review
+        if: steps.extract.outputs.ticket != '' && steps.get_transition.outputs.transition_id != ''
+        id: primary_transition
+        continue-on-error: true
+        env:
+          JIRA_BASE_URL: ${{ vars.JIRA_BASE_URL }}
+          JIRA_USER_EMAIL: ${{ vars.JIRA_USER_EMAIL }}
+          JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+        run: |
+          TICKET="${{ steps.extract.outputs.ticket }}"
+          TRANSITION_ID="${{ steps.get_transition.outputs.transition_id }}"
+          
+          ISSUE_JSON=$(curl -s -u "$JIRA_USER_EMAIL:$JIRA_API_TOKEN" \
+            "$JIRA_BASE_URL/rest/api/3/issue/$TICKET" \
+            -H "Accept: application/json")
+          
+          CURRENT_STATUS=$(echo "$ISSUE_JSON" | jq -r '.fields.status.name' 2>/dev/null || echo "")
+          
+          if [ -z "$CURRENT_STATUS" ] || [ "$CURRENT_STATUS" == "null" ]; then
+            echo "Warning: Could not retrieve current status for $TICKET, attempting transition anyway"
+          else
+            echo "Current status of $TICKET: $CURRENT_STATUS"
+            
+            STATUS_CATEGORY=$(echo "$ISSUE_JSON" | jq -r '.fields.status.statusCategory.key' 2>/dev/null || echo "")
+            if [ "$STATUS_CATEGORY" == "done" ]; then
+              echo "Card ignorado: o status atual já está em uma etapa avançada"
+              exit 0
+            fi
+            
+            CURRENT_LOWER=$(echo "$CURRENT_STATUS" | tr '[:upper:]' '[:lower:]' | xargs)
+            
+            IS_ADVANCED=false
+            case "$CURRENT_LOWER" in
+              "in code review"|"ready to deploy hml"|"ready for qa"|"in tests"|"ready to deploy in prd"|"ready_for_review"|"ready for review"|"done"|"cancelled"|"closed"|"uat"|"production")
+                IS_ADVANCED=true ;;
+            esac
+            
+            if [ "$IS_ADVANCED" == "true" ]; then
+              echo "Card ignorado: o status atual já está em uma etapa avançada"
+              exit 0
+            fi
+          fi
+          
+          HTTP_CODE=$(curl -s -w "%{http_code}" -o /dev/null -u "$JIRA_USER_EMAIL:$JIRA_API_TOKEN" \
+            -X POST \
+            "$JIRA_BASE_URL/rest/api/3/issue/$TICKET/transitions" \
+            -H "Accept: application/json" \
+            -H "Content-Type: application/json" \
+            -d "{\"transition\":{\"id\":$TRANSITION_ID}}")
+          
+          if [ "$HTTP_CODE" -eq 204 ]; then
+            echo "Successfully transitioned $TICKET to 'In Code Review'"
+          else
+            echo "Failed to transition $TICKET (HTTP $HTTP_CODE)"
+            exit 1
+          fi
+
+  pr-merged:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Extract Jira ticket from branch name
+        id: extract
+        run: |
+          BRANCH="${{ github.event.pull_request.head.ref }}"
+          TICKET=$(echo "$BRANCH" | grep -oE '[A-Z]+-[0-9]+' | head -1)
+          echo "ticket=$TICKET" >> $GITHUB_OUTPUT
+
+      - name: Determine target transition name
+        id: transition_name
+        if: steps.extract.outputs.ticket != ''
+        run: |
+          BASE_REF="${{ github.base_ref }}"
+          
+          if [ "$BASE_REF" == "main" ]; then
+            echo "transition_name=Done" >> $GITHUB_OUTPUT
+          elif [ "$BASE_REF" == "develop" ]; then
+            echo "transition_name=Ready to Deploy HML" >> $GITHUB_OUTPUT
+          else
+            echo "error=Invalid base reference" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+
+      - name: Login to Jira
+        if: steps.extract.outputs.ticket != ''
+        uses: atlassian/gajira-login@v3
+        env:
+          JIRA_BASE_URL: ${{ vars.JIRA_BASE_URL }}
+          JIRA_USER_EMAIL: ${{ vars.JIRA_USER_EMAIL }}
+          JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+
+      - name: Get transition ID dynamically
+        if: steps.extract.outputs.ticket != ''
+        id: get_transition_id
+        env:
+          JIRA_BASE_URL: ${{ vars.JIRA_BASE_URL }}
+          JIRA_USER_EMAIL: ${{ vars.JIRA_USER_EMAIL }}
+          JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+        run: |
+          TRANSITIONS_JSON=$(curl -s -u "$JIRA_USER_EMAIL:$JIRA_API_TOKEN" \
+            "$JIRA_BASE_URL/rest/api/3/issue/${{ steps.extract.outputs.ticket }}/transitions" \
+            -H "Accept: application/json")
+          
+          TRANSITION_NAME="${{ steps.transition_name.outputs.transition_name }}"
+          TRANSITION_ID=$(echo "$TRANSITIONS_JSON" | jq -r --arg name "$TRANSITION_NAME" '.transitions[] | select(.name == $name) | .id' | head -1 | tr -d '\n' | xargs)
+          
+          if [ -z "$TRANSITION_ID" ] || [ "$TRANSITION_ID" == "null" ]; then
+            echo "Error: Transition '$TRANSITION_NAME' not found"
+            echo "Available transitions:"
+            echo "$TRANSITIONS_JSON" | jq -r '.transitions[] | "\(.id): \(.name)"'
+            exit 1
+          fi
+          
+          echo "transition_id=$TRANSITION_ID" >> $GITHUB_OUTPUT
+
+      - name: Transition Jira ticket
+        if: steps.extract.outputs.ticket != '' && steps.get_transition_id.outputs.transition_id != ''
+        id: primary_transition
+        continue-on-error: true
+        env:
+          JIRA_BASE_URL: ${{ vars.JIRA_BASE_URL }}
+          JIRA_USER_EMAIL: ${{ vars.JIRA_USER_EMAIL }}
+          JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+        run: |
+          TICKET="${{ steps.extract.outputs.ticket }}"
+          TRANSITION_ID="${{ steps.get_transition_id.outputs.transition_id }}"
+          TARGET_TRANSITION="${{ steps.transition_name.outputs.transition_name }}"
+          
+          ISSUE_JSON=$(curl -s -u "$JIRA_USER_EMAIL:$JIRA_API_TOKEN" \
+            "$JIRA_BASE_URL/rest/api/3/issue/$TICKET" \
+            -H "Accept: application/json")
+          
+          CURRENT_STATUS=$(echo "$ISSUE_JSON" | jq -r '.fields.status.name' 2>/dev/null || echo "")
+          
+          if [ -z "$CURRENT_STATUS" ] || [ "$CURRENT_STATUS" == "null" ]; then
+            echo "Warning: Could not retrieve current status for $TICKET, attempting transition anyway"
+          else
+            echo "Current status of $TICKET: $CURRENT_STATUS"
+            
+            STATUS_CATEGORY=$(echo "$ISSUE_JSON" | jq -r '.fields.status.statusCategory.key' 2>/dev/null || echo "")
+            if [ "$STATUS_CATEGORY" == "done" ]; then
+              echo "Card ignorado: o status atual já está em uma etapa avançada"
+              exit 0
+            fi
+            
+            CURRENT_LOWER=$(echo "$CURRENT_STATUS" | tr '[:upper:]' '[:lower:]' | xargs)
+            TARGET_LOWER=$(echo "$TARGET_TRANSITION" | tr '[:upper:]' '[:lower:]' | xargs)
+            
+            if [ "$CURRENT_LOWER" == "$TARGET_LOWER" ]; then
+              echo "Skipping $TICKET: already in target status '$TARGET_TRANSITION'"
+              exit 0
+            fi
+            
+            IS_ADVANCED=false
+            if [ "$TARGET_LOWER" == "done" ]; then
+              case "$CURRENT_LOWER" in
+                "done"|"cancelled"|"closed")
+                  IS_ADVANCED=true ;;
+              esac
+            elif [ "$TARGET_LOWER" == "ready to deploy hml" ]; then
+              case "$CURRENT_LOWER" in
+                "ready to deploy hml"|"ready for qa"|"in tests"|"ready to deploy in prd"|"ready_for_review"|"ready for review"|"done"|"cancelled"|"closed"|"uat"|"production")
+                  IS_ADVANCED=true ;;
+              esac
+            else
+              case "$CURRENT_LOWER" in
+                "done"|"cancelled"|"closed")
+                  IS_ADVANCED=true ;;
+              esac
+            fi
+            
+            if [ "$IS_ADVANCED" == "true" ]; then
+              echo "Card ignorado: o status atual já está em uma etapa avançada"
+              exit 0
+            fi
+          fi
+          
+          HTTP_CODE=$(curl -s -w "%{http_code}" -o /dev/null -u "$JIRA_USER_EMAIL:$JIRA_API_TOKEN" \
+            -X POST \
+            "$JIRA_BASE_URL/rest/api/3/issue/$TICKET/transitions" \
+            -H "Accept: application/json" \
+            -H "Content-Type: application/json" \
+            -d "{\"transition\":{\"id\":$TRANSITION_ID}}")
+          
+          if [ "$HTTP_CODE" -eq 204 ]; then
+            echo "Successfully transitioned $TICKET from '$CURRENT_STATUS' to '$TARGET_TRANSITION'"
+          else
+            echo "Failed to transition $TICKET (HTTP $HTTP_CODE)"
+            exit 1
+          fi
