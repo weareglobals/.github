@@ -1,15 +1,16 @@
-name: Code Review com Gemini (Qodo Merge)
+name: Code Review com Gemini (Qodo Merge) # 
 
 on:
-  pull_request:
-    # synchronize é importante: faz a IA rodar de novo se o dev fizer um novo commit no PR
-    types: [opened, reopened, synchronize, ready_for_review]
-  issue_comment:
-    types: [created]
+  workflow_call:
+  # pull_request:
+  #   # synchronize é importante: faz a IA rodar de novo se o dev fizer um novo commit no PR
+  #   types: [opened, reopened, synchronize, ready_for_review]
+  # issue_comment:
+  #   types: [created]
 
 jobs:
   pr_agent_job:
-    if: ${{ github.event.sender.type != 'Bot' }}
+    if: ${{ github.actor != 'github-actions[bot]' }}
     runs-on: ubuntu-latest
     permissions:
       issues: write
