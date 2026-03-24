@@ -1,0 +1,66 @@
+name: Google Chat PR Notification
+run-name: Notifying PR '${{ github.event.pull_request.title }}' on Google Chat
+
+on:
+  workflow_call:
+
+jobs:
+  notify-gchat:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Extract Jira ticket from branch name
+        id: extract
+        run: |
+          BRANCH="${{ github.event.pull_request.head.ref }}"
+          TICKET=$(echo "$BRANCH" | grep -oE '[A-Z]+-[0-9]+' | head -1)
+          echo "ticket=$TICKET" >> $GITHUB_OUTPUT
+          echo "Extracted ticket: $TICKET"
+
+      - name: Fetch Jira Data
+        if: steps.extract.outputs.ticket != ''
+        id: jira
+        env:
+          JIRA_USER_EMAIL: ${{ vars.JIRA_USER_EMAIL }}
+          JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+          JIRA_BASE_URL: "https://weareglobals.atlassian.net"
+        run: |
+          TICKET="${{ steps.extract.outputs.ticket }}"
+
+          RESPONSE=$(curl -s -u "$JIRA_USER_EMAIL:$JIRA_API_TOKEN" \
+            -H "Accept: application/json" \
+            "$JIRA_BASE_URL/rest/api/3/issue/$TICKET?fields=summary")
+
+          JIRA_SUMMARY=$(echo "$RESPONSE" | jq -r '.fields.summary')
+
+          echo "summary=$JIRA_SUMMARY" >> $GITHUB_OUTPUT
+
+      - name: Post to Google Chat
+        env:
+          WEBHOOK: ${{ secrets.CODE_REVIEW_GOOGLE_CHAT_WEBHOOK }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          TICKET: ${{ steps.extract.outputs.ticket }}
+          JIRA_SUMMARY: ${{ steps.jira.outputs.summary }}
+          USER_ID: ${{ secrets.GOOGLE_CHAT_USER_ID_TO_CODE_REVIEW }}
+          PR_AUTHOR_LOGIN: ${{ github.event.pull_request.user.login }}
+          PR_AUTHOR_NAME: ${{ github.event.pull_request.user.name }}
+        run: |
+          ESCAPED_PR_TITLE=$(echo "$PR_TITLE" | sed 's/"/\\"/g')
+
+          if [ -n "$PR_AUTHOR_NAME" ] && [ "$PR_AUTHOR_NAME" != "null" ]; then
+            AUTHOR_LINE="$PR_AUTHOR_NAME (@$PR_AUTHOR_LOGIN)"
+          else
+            AUTHOR_LINE="@$PR_AUTHOR_LOGIN"
+          fi
+          ESCAPED_AUTHOR=$(echo "$AUTHOR_LINE" | sed 's/"/\\"/g')
+
+          if [ -n "$TICKET" ]; then
+            ESCAPED_SUMMARY=$(echo "$JIRA_SUMMARY" | sed 's/"/\\"/g')
+            MESSAGE_TEXT="$ESCAPED_SUMMARY\n$ESCAPED_PR_TITLE\n\n*Autor:* $ESCAPED_AUTHOR\n\n<users/${USER_ID}>\n\n*Task:* https://weareglobals.atlassian.net/browse/$TICKET\n\n*PR:* $PR_URL"
+          else
+            MESSAGE_TEXT="$ESCAPED_PR_TITLE\n\n*Autor:* $ESCAPED_AUTHOR\n\n<users/${USER_ID}>\n\n*PR:* $PR_URL"
+          fi
+
+          curl -X POST "$WEBHOOK" \
+            -H 'Content-Type: application/json' \
+            -d "{\"text\": \"$MESSAGE_TEXT\"}"
