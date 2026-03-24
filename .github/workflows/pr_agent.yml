@@ -1,0 +1,38 @@
+name: Code Review com Gemini (Qodo Merge)
+
+on:
+  pull_request:
+    # synchronize é importante: faz a IA rodar de novo se o dev fizer um novo commit no PR
+    types: [opened, reopened, synchronize, ready_for_review]
+  issue_comment:
+    types: [created]
+
+jobs:
+  pr_agent_job:
+    if: ${{ github.event.sender.type != 'Bot' }}
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      pull-requests: write
+      contents: write
+    steps:
+      - name: Qodo Merge AI Review
+        id: pragent
+        uses: Codium-ai/pr-agent@main
+        env:
+          # Credenciais
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          
+          # Escolha do Modelo: Linha PRO para maior capacidade analítica
+          config.model: "gemini/gemini-1.5-pro"
+          config.fallback_models: '["gemini/gemini-1.5-flash"]'
+          
+          # Comportamento Automático
+          github_action_config.auto_review: "true"      # Faz a revisão assim que abre o PR
+          github_action_config.auto_describe: "true"    # Cria um resumo detalhado do PR
+          github_action_config.auto_improve: "false"    # Deixa desativado para economizar. Use apenas digitando "/improve" no PR
+          
+          # Ajustes para alto volume (evita analisar arquivos gigantes inúteis)
+          config.ignore_pr_title: 'true'
+          pr_reviewer.extra_instructions: "Por favor, responda em Português do Brasil. Foco em encontrar bugs lógicos, problemas de segurança e más práticas de arquitetura. Ignore formatação simples."
