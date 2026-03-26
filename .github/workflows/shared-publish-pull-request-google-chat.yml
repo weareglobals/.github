@@ -19,9 +19,9 @@ jobs:
           echo "Checking branch: $BRANCH"
           TICKET=$(echo "$BRANCH" | grep -oE '[A-Z]+-[0-9]+' | head -1 || true)
           if [ -n "$TICKET" ]; then
-            echo "✅ Ticket found: $TICKET"
+            echo "Ticket found: $TICKET"
           else
-            echo "⚠️ No Jira ticket pattern found in branch name."
+            echo "No Jira ticket pattern found in branch name."
           fi
           echo "ticket=$TICKET" >> $GITHUB_OUTPUT
           echo "::endgroup::"
@@ -43,9 +43,9 @@ jobs:
           JIRA_SUMMARY=$(echo "$RESPONSE" | jq -r '.fields.summary // empty')
           
           if [ -n "$JIRA_SUMMARY" ]; then
-            echo "✅ Summary: $JIRA_SUMMARY"
+            echo "Summary: $JIRA_SUMMARY"
           else
-            echo "❌ Could not fetch summary from Jira API."
+            echo "Could not fetch summary from Jira API."
           fi
           echo "summary=$JIRA_SUMMARY" >> $GITHUB_OUTPUT
           echo "::endgroup::"
@@ -59,7 +59,7 @@ jobs:
           echo "::group::Mapping GitHub User to Google Chat ID"
           
           if [ -z "$USER_MAP" ]; then
-            echo "❌ ERRO: USER_MAP está vazio. Verifique o Secret da Organização."
+            echo "ERRO: USER_MAP está vazio. Verifique o Secret da Organização."
           fi
 
           GH_LOGIN="${{ github.event.pull_request.user.login }}"
@@ -88,9 +88,9 @@ jobs:
             ) | .id" | head -1 | grep -v "null" || echo "")
 
           if [ -n "$GCHAT_ID" ]; then
-            echo "✅ Match found! ID: $GCHAT_ID"
+            echo "Match found! ID: $GCHAT_ID"
           else
-            echo "❌ No match found. Using fallback."
+            echo "No match found. Using fallback."
           fi
 
           echo "gchat_id=$GCHAT_ID" >> $GITHUB_OUTPUT
@@ -135,7 +135,7 @@ jobs:
           echo "Response: $RESPONSE"
           
           if echo "$RESPONSE" | grep -q "error"; then
-            echo "❌ Failed to send message to Google Chat."
+            echo "Failed to send message to Google Chat."
             exit 1
           fi
           echo "::endgroup::"
