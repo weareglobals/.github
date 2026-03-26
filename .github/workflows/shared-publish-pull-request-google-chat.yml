@@ -11,9 +11,17 @@ jobs:
       - name: Extract Jira ticket from branch name
         id: extract
         run: |
+          echo "::group::Extracting Jira Ticket"
           BRANCH="${{ github.event.pull_request.head.ref }}"
+          echo "Checking branch: $BRANCH"
           TICKET=$(echo "$BRANCH" | grep -oE '[A-Z]+-[0-9]+' | head -1 || true)
+          if [ -n "$TICKET" ]; then
+            echo "✅ Ticket found: $TICKET"
+          else
+            echo "⚠️ No Jira ticket pattern found in branch name."
+          fi
           echo "ticket=$TICKET" >> $GITHUB_OUTPUT
+          echo "::endgroup::"
 
       - name: Fetch Jira Data
         if: steps.extract.outputs.ticket != ''
@@ -23,51 +31,85 @@ jobs:
           JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
           JIRA_BASE_URL: "https://weareglobals.atlassian.net"
         run: |
+          echo "::group::Fetching Jira Summary"
           TICKET="${{ steps.extract.outputs.ticket }}"
-          RESPONSE=$(curl -s -u "$JIRA_USER_EMAIL:$JIRA_API_TOKEN" -H "Accept: application/json" "$JIRA_BASE_URL/rest/api/3/issue/$TICKET?fields=summary")
+          echo "Requesting summary for $TICKET..."
+          
+          RESPONSE=$(curl -s -u "$JIRA_USER_EMAIL:$JIRA_API_TOKEN" \
+            -H "Accept: application/json" \
+            "$JIRA_BASE_URL/rest/api/3/issue/$TICKET?fields=summary")
+          
           JIRA_SUMMARY=$(echo "$RESPONSE" | jq -r '.fields.summary // empty')
+          
+          if [ -n "$JIRA_SUMMARY" ]; then
+            echo "✅ Summary: $JIRA_SUMMARY"
+          else
+            echo "❌ Could not fetch summary from Jira API."
+          fi
           echo "summary=$JIRA_SUMMARY" >> $GITHUB_OUTPUT
+          echo "::endgroup::"
 
-      - name: Advanced User Mapping (Token-based Fallbacks)
+      - name: Ultra-Resilient User Mapping
         id: mapper
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           USER_MAP: ${{ vars.GOOGLE_CHAT_USERS_MAPPER }}
         run: |
-          LOGIN="${{ github.event.pull_request.user.login }}"
-          NAME="${{ github.event.pull_request.user.name }}"
-          EMAIL=$(curl -s -H "Authorization: token $GH_TOKEN" ${{ github.event.pull_request.commits_url }} | jq -r '.[0].commit.author.email // empty')
+          echo "::group::Mapping GitHub User to Google Chat ID"
+          
+          GH_LOGIN="${{ github.event.pull_request.user.login }}"
+          GH_NAME="${{ github.event.pull_request.user.name }}"
+          echo "Fetching commit email for $GH_LOGIN..."
+          GH_EMAIL=$(curl -s -H "Authorization: token $GH_TOKEN" ${{ github.event.pull_request.commits_url }} | jq -r '.[0].commit.author.email // empty')
 
-          normalize() {
+          echo "Raw Data from GitHub:"
+          echo "  - Login: $GH_LOGIN"
+          echo "  - Name:  $GH_NAME"
+          echo "  - Email: $GH_EMAIL"
+
+          clean_val() {
             echo "$1" | tr '[:upper:]' '[:lower:]' | sed 's/[-_.]/ /g' | xargs
           }
 
-          CLEAN_LOGIN=$(normalize "$LOGIN")
-          CLEAN_NAME=$(normalize "${NAME:-$LOGIN}")
-          CLEAN_EMAIL=$(echo "$EMAIL" | tr '[:upper:]' '[:lower:]')
+          C_LOGIN=$(clean_val "$GH_LOGIN")
+          C_NAME=$(clean_val "${GH_NAME:-$GH_LOGIN}")
+          C_EMAIL=$(echo "$GH_EMAIL" | tr '[:upper:]' '[:lower:]')
+          T_FIRST=$(echo "$C_NAME" | awk '{print $1}')
+          T_LAST=$(echo "$C_NAME" | awk '{print $NF}')
+
+          echo "Normalized Data:"
+          echo "  - Clean Login: $C_LOGIN"
+          echo "  - Clean Name:  $C_NAME"
+          echo "  - Tokens:      [$T_FIRST] [$T_LAST]"
+
+          GCHAT_ID=""
+
+          echo "Searching in Mapper JSON..."
           
-          FIRST_NAME=$(echo "$CLEAN_NAME" | awk '{print $1}')
-          LAST_NAME=$(echo "$CLEAN_NAME" | awk '{print $NF}')
+          GCHAT_ID=$(echo "$USER_MAP" | jq -r ".[] | select(.email | ascii_downcase == \"$C_EMAIL\") | .id" | head -1 | grep -v "null" || echo "")
+          [ -z "$GCHAT_ID" ] || echo "✅ Match found via Tier 1 (Email)"
 
-          echo "Buscando match para: Login($CLEAN_LOGIN), Nome($CLEAN_NAME), Email($CLEAN_EMAIL)"
-
-          GCHAT_ID=$(echo "$USER_MAP" | jq -r ".[] | select(.email | ascii_downcase == \"$CLEAN_EMAIL\") | .id" | head -1)
-
-          if [ -z "$GCHAT_ID" ] || [ "$GCHAT_ID" == "null" ]; then
-            GCHAT_ID=$(echo "$USER_MAP" | jq -r ".[] | select((.name | ascii_downcase | gsub(\"[-_.]\"; \" \") | gsub(\"\\\\s+\"; \" \") | trim) == \"$CLEAN_NAME\") | .id" | head -1)
+          if [ -z "$GCHAT_ID" ]; then
+            GCHAT_ID=$(echo "$USER_MAP" | jq -r ".[] | select((.name | ascii_downcase | gsub(\"[-_.]\"; \" \") | gsub(\"\\\\s+\"; \" \")) == \"$C_NAME\") | .id" | head -1 | grep -v "null" || echo "")
+            [ -z "$GCHAT_ID" ] || echo "✅ Match found via Tier 2 (Profile Name)"
           fi
 
-          if [ -z "$GCHAT_ID" ] || [ "$GCHAT_ID" == "null" ]; then
-            GCHAT_ID=$(echo "$USER_MAP" | jq -r ".[] | select((.name | ascii_downcase | gsub(\"[-_.]\"; \" \") | gsub(\"\\\\s+\"; \" \") | trim) == \"$CLEAN_LOGIN\") | .id" | head -1)
+          if [ -z "$GCHAT_ID" ]; then
+            GCHAT_ID=$(echo "$USER_MAP" | jq -r ".[] | select((.name | ascii_downcase | gsub(\"[-_.]\"; \" \") | gsub(\"\\\\s+\"; \" \")) == \"$C_LOGIN\") | .id" | head -1 | grep -v "null" || echo "")
+            [ -z "$GCHAT_ID" ] || echo "✅ Match found via Tier 3 (Username)"
           fi
 
-          if [ -z "$GCHAT_ID" ] || [ "$GCHAT_ID" == "null" ]; then
-            GCHAT_ID=$(echo "$USER_MAP" | jq -r ".[] | select((.name | ascii_downcase | contains(\"$FIRST_NAME\")) and (.name | ascii_downcase | contains(\"$LAST_NAME\"))) | .id" | head -1)
+          if [ -z "$GCHAT_ID" ]; then
+            GCHAT_ID=$(echo "$USER_MAP" | jq -r ".[] | select((.name | ascii_downcase | contains(\"$T_FIRST\")) and (.name | ascii_downcase | contains(\"$T_LAST\"))) | .id" | head -1 | grep -v "null" || echo "")
+            [ -z "$GCHAT_ID" ] || echo "✅ Match found via Tier 4 (Fuzzy tokens)"
           fi
 
-          FINAL_ID=$(echo "$GCHAT_ID" | grep -v "null" || echo "")
-          echo "gchat_id=$FINAL_ID" >> $GITHUB_OUTPUT
-          echo "Match Final: ${FINAL_ID:-Nenhum ID encontrado}"
+          if [ -z "$GCHAT_ID" ]; then
+            echo "❌ No match found in any tier. Fallback to @$GH_LOGIN will be used."
+          fi
+
+          echo "gchat_id=$GCHAT_ID" >> $GITHUB_OUTPUT
+          echo "::endgroup::"
 
       - name: Post to Google Chat
         env:
@@ -80,6 +122,7 @@ jobs:
           AUTHOR_GCHAT_ID: ${{ steps.mapper.outputs.gchat_id }}
           PR_AUTHOR_LOGIN: ${{ github.event.pull_request.user.login }}
         run: |
+          echo "::group::Sending Webhook to Google Chat"
           ESCAPED_PR_TITLE=$(echo "$PR_TITLE" | sed 's/"/\\"/g')
 
           if [ -n "$TICKET" ] && [ -n "$JIRA_SUMMARY" ]; then
@@ -97,4 +140,12 @@ jobs:
 
           MESSAGE_TEXT="$HEADER\n\n$AUTHOR_LINE\n\n<users/${REVIEWER_ID}>\n\n*PR:* $PR_URL"
 
-          curl -X POST "$WEBHOOK" -H 'Content-Type: application/json' -d "{\"text\": \"$MESSAGE_TEXT\"}"
+          echo "Final Message Payload:"
+          echo -e "$MESSAGE_TEXT"
+
+          RESPONSE=$(curl -s -X POST "$WEBHOOK" \
+            -H 'Content-Type: application/json' \
+            -d "{\"text\": \"$MESSAGE_TEXT\"}")
+          
+          echo "Google API Response: $RESPONSE"
+          echo "::endgroup::"
