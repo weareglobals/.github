@@ -24,28 +24,40 @@ jobs:
           JIRA_BASE_URL: "https://weareglobals.atlassian.net"
         run: |
           TICKET="${{ steps.extract.outputs.ticket }}"
-          RESPONSE=$(curl -s -u "$JIRA_USER_EMAIL:$JIRA_API_TOKEN" \
-            -H "Accept: application/json" \
-            "$JIRA_BASE_URL/rest/api/3/issue/$TICKET?fields=summary")
-          
+          RESPONSE=$(curl -s -u "$JIRA_USER_EMAIL:$JIRA_API_TOKEN" -H "Accept: application/json" "$JIRA_BASE_URL/rest/api/3/issue/$TICKET?fields=summary")
           JIRA_SUMMARY=$(echo "$RESPONSE" | jq -r '.fields.summary // empty')
           echo "summary=$JIRA_SUMMARY" >> $GITHUB_OUTPUT
 
-      - name: Map GitHub User to Google Chat ID
+      - name: Advanced User Mapping (Email > Name > Login)
         id: mapper
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           USER_MAP: ${{ vars.GOOGLE_CHAT_USERS_MAPPER }}
         run: |
-          AUTHOR_LOGIN="${{ github.event.pull_request.user.login }}"
+          GH_LOGIN="${{ github.event.pull_request.user.login }}"
+          GH_NAME="${{ github.event.pull_request.user.name }}"
           
-          EMAIL=$(curl -s -H "Authorization: token $GH_TOKEN" https://api.github.com/users/$AUTHOR_LOGIN | jq -r '.email')
-          if [ "$EMAIL" == "null" ] || [ -z "$EMAIL" ]; then
-            EMAIL=$(curl -s -H "Authorization: token $GH_TOKEN" ${{ github.event.pull_request.commits_url }} | jq -r '.[0].commit.author.email')
+          GH_EMAIL=$(curl -s -H "Authorization: token $GH_TOKEN" ${{ github.event.pull_request.commits_url }} | jq -r '.[0].commit.author.email // empty')
+          
+          GH_EMAIL_LOWER=$(echo "$GH_EMAIL" | tr '[:upper:]' '[:lower:]')
+          GH_NAME_LOWER=$(echo "$GH_NAME" | tr '[:upper:]' '[:lower:]')
+          GH_LOGIN_LOWER=$(echo "$GH_LOGIN" | tr '[:upper:]' '[:lower:]')
+
+          echo "Buscando ID para: Email($GH_EMAIL_LOWER), Nome($GH_NAME_LOWER), Login($GH_LOGIN_LOWER)"
+
+          GCHAT_ID=$(echo "$USER_MAP" | jq -r ".[] | select(.email | ascii_downcase == \"$GH_EMAIL_LOWER\") | .id" | head -1)
+
+          if [ -z "$GCHAT_ID" ] || [ "$GCHAT_ID" == "null" ]; then
+            GCHAT_ID=$(echo "$USER_MAP" | jq -r ".[] | select(.name | ascii_downcase == \"$GH_NAME_LOWER\") | .id" | head -1)
           fi
-          
-          GCHAT_ID=$(echo "$USER_MAP" | jq -r ".[] | select(.email == \"$EMAIL\") | .id // empty")
-          echo "gchat_id=$GCHAT_ID" >> $GITHUB_OUTPUT
+
+          if [ -z "$GCHAT_ID" ] || [ "$GCHAT_ID" == "null" ]; then
+            GCHAT_ID=$(echo "$USER_MAP" | jq -r ".[] | select(.name | ascii_downcase == \"$GH_LOGIN_LOWER\") | .id" | head -1)
+          fi
+
+          FINAL_ID=$(echo "$GCHAT_ID" | grep -v "null" || echo "")
+          echo "gchat_id=$FINAL_ID" >> $GITHUB_OUTPUT
+          echo "ID Encontrado: ${FINAL_ID:-Nenhum}"
 
       - name: Post to Google Chat
         env:
