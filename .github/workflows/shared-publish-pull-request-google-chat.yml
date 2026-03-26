@@ -114,9 +114,6 @@ jobs:
           echo "gchat_id=$GCHAT_ID" >> $GITHUB_OUTPUT
           echo "::endgroup::"
 
-  notify-gchat:
-    runs-on: ubuntu-latest
-    steps:
       - name: Post to Google Chat
         env:
           WEBHOOK: ${{ secrets.CODE_REVIEW_GOOGLE_CHAT_WEBHOOK }}
@@ -129,37 +126,29 @@ jobs:
           PR_AUTHOR_LOGIN: ${{ github.event.pull_request.user.login }}
         run: |
           echo "::group::Sending Webhook to Google Chat"
-          
-          # 1. Monta o cabeçalho
+          ESCAPED_PR_TITLE=$(echo "$PR_TITLE" | sed 's/"/\\"/g')
+
           if [ -n "$TICKET" ] && [ -n "$JIRA_SUMMARY" ]; then
-            HEADER="$JIRA_SUMMARY\n$PR_TITLE"
+            ESCAPED_SUMMARY=$(echo "$JIRA_SUMMARY" | sed 's/"/\\"/g')
+            HEADER="$ESCAPED_SUMMARY\n$ESCAPED_PR_TITLE"
           else
-            HEADER="$PR_TITLE"
+            HEADER="$ESCAPED_PR_TITLE"
           fi
 
-          # 2. Monta a linha do autor
           if [ -n "$AUTHOR_GCHAT_ID" ]; then
             AUTHOR_LINE="*Autor:* <users/$AUTHOR_GCHAT_ID>"
           else
             AUTHOR_LINE="*Autor:* @$PR_AUTHOR_LOGIN"
           fi
 
-          # 3. Monta o corpo da mensagem
-          MESSAGE="$HEADER\n\n$AUTHOR_LINE\n\n<users/$REVIEWER_ID>\n\n*PR:* $PR_URL"
+          MESSAGE_TEXT="$HEADER\n\n$AUTHOR_LINE\n\n<users/${REVIEWER_ID}>\n\n*PR:* $PR_URL"
 
-          # 4. ENVIO SEGURO: Usa o jq para criar um JSON válido sem erros de escape ou quebra de linha
-          JSON_PAYLOAD=$(jq -n --arg msg "$MESSAGE" '{"text": $msg}')
+          echo "Final Message Payload:"
+          echo -e "$MESSAGE_TEXT"
 
-          echo "Enviando JSON Payload..."
           RESPONSE=$(curl -s -X POST "$WEBHOOK" \
             -H 'Content-Type: application/json' \
-            -d "$JSON_PAYLOAD")
+            -d "{\"text\": \"$MESSAGE_TEXT\"}")
           
           echo "Google API Response: $RESPONSE"
-          
-          # Verifica se a resposta contém erro
-          if echo "$RESPONSE" | grep -q "error"; then
-            echo "❌ Erro ao enviar para o Google Chat."
-            exit 1
-          fi
           echo "::endgroup::"
