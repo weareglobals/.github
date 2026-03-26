@@ -7,22 +7,12 @@ on:
 jobs:
   notify-gchat:
     runs-on: ubuntu-latest
-    steps:
-      - name: Debug Workflow Version
-        run: echo "Executando versão consolidada (v2.0) - 2026-03-26"
-
       - name: Extract Jira ticket from branch name
         id: extract
         run: |
           echo "::group::Extracting Jira Ticket"
           BRANCH="${{ github.event.pull_request.head.ref }}"
-          echo "Checking branch: $BRANCH"
           TICKET=$(echo "$BRANCH" | grep -oE '[A-Z]+-[0-9]+' | head -1 || true)
-          if [ -n "$TICKET" ]; then
-            echo "Ticket found: $TICKET"
-          else
-            echo "No Jira ticket pattern found in branch name."
-          fi
           echo "ticket=$TICKET" >> $GITHUB_OUTPUT
           echo "::endgroup::"
 
@@ -39,14 +29,7 @@ jobs:
           RESPONSE=$(curl -s -u "$JIRA_USER_EMAIL:$JIRA_API_TOKEN" \
             -H "Accept: application/json" \
             "$JIRA_BASE_URL/rest/api/3/issue/$TICKET?fields=summary")
-          
           JIRA_SUMMARY=$(echo "$RESPONSE" | jq -r '.fields.summary // empty')
-          
-          if [ -n "$JIRA_SUMMARY" ]; then
-            echo "Summary: $JIRA_SUMMARY"
-          else
-            echo "Could not fetch summary from Jira API."
-          fi
           echo "summary=$JIRA_SUMMARY" >> $GITHUB_OUTPUT
           echo "::endgroup::"
 
@@ -57,16 +40,9 @@ jobs:
           USER_MAP: ${{ secrets.GOOGLE_CHAT_USERS_MAPPER }}
         run: |
           echo "::group::Mapping GitHub User to Google Chat ID"
-          
-          if [ -z "$USER_MAP" ]; then
-            echo "ERRO: USER_MAP está vazio. Verifique o Secret da Organização."
-          fi
-
           GH_LOGIN="${{ github.event.pull_request.user.login }}"
           GH_NAME="${{ github.event.pull_request.user.name }}"
           GH_EMAIL=$(curl -s -H "Authorization: token $GH_TOKEN" ${{ github.event.pull_request.commits_url }} | jq -r '.[0].commit.author.email // empty')
-
-          echo "GitHub Data: Login($GH_LOGIN), Name($GH_NAME), Email($GH_EMAIL)"
 
           clean_val() {
             echo "$1" | tr '[:upper:]' '[:lower:]' | sed 's/[-_.]/ /g' | xargs
@@ -87,12 +63,6 @@ jobs:
               ((.name | clean | contains(\"$T_FIRST\")) and (.name | clean | contains(\"$T_LAST\")))
             ) | .id" | head -1 | grep -v "null" || echo "")
 
-          if [ -n "$GCHAT_ID" ]; then
-            echo "Match found! ID: $GCHAT_ID"
-          else
-            echo "No match found. Using fallback."
-          fi
-
           echo "gchat_id=$GCHAT_ID" >> $GITHUB_OUTPUT
           echo "::endgroup::"
 
@@ -108,7 +78,7 @@ jobs:
           PR_AUTHOR_LOGIN: ${{ github.event.pull_request.user.login }}
         run: |
           echo "::group::Sending Webhook"
-
+          
           if [ -n "$TICKET" ] && [ -n "$JIRA_SUMMARY" ]; then
             HEADER="$JIRA_SUMMARY\n$PR_TITLE"
           else
@@ -125,17 +95,5 @@ jobs:
 
           PAYLOAD=$(jq -n --arg msg "$MESSAGE" '{"text": $msg}')
 
-          echo "Payload final:"
-          echo "$PAYLOAD"
-
-          RESPONSE=$(curl -s -X POST "$WEBHOOK" \
-            -H 'Content-Type: application/json' \
-            -d "$PAYLOAD")
-          
-          echo "Response: $RESPONSE"
-          
-          if echo "$RESPONSE" | grep -q "error"; then
-            echo "Failed to send message to Google Chat."
-            exit 1
-          fi
+          curl -s -X POST "$WEBHOOK" -H 'Content-Type: application/json' -d "$PAYLOAD"
           echo "::endgroup::"
