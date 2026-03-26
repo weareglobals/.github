@@ -8,12 +8,21 @@ jobs:
   notify-gchat:
     runs-on: ubuntu-latest
     steps:
+      - name: Debug Workflow Version
+        run: echo "Executando versão atualizada do workflow em 2026-03-26 15:00"
+
       - name: Extract Jira ticket from branch name
         id: extract
         run: |
           echo "::group::Extracting Jira Ticket"
           BRANCH="${{ github.event.pull_request.head.ref }}"
+          echo "Checking branch: $BRANCH"
           TICKET=$(echo "$BRANCH" | grep -oE '[A-Z]+-[0-9]+' | head -1 || true)
+          if [ -n "$TICKET" ]; then
+            echo "✅ Ticket found: $TICKET"
+          else
+            echo "⚠️ No Jira ticket pattern found in branch name."
+          fi
           echo "ticket=$TICKET" >> $GITHUB_OUTPUT
           echo "::endgroup::"
 
@@ -27,10 +36,19 @@ jobs:
         run: |
           echo "::group::Fetching Jira Summary"
           TICKET="${{ steps.extract.outputs.ticket }}"
+          echo "Requesting summary for $TICKET..."
+          
           RESPONSE=$(curl -s -u "$JIRA_USER_EMAIL:$JIRA_API_TOKEN" \
             -H "Accept: application/json" \
             "$JIRA_BASE_URL/rest/api/3/issue/$TICKET?fields=summary")
+          
           JIRA_SUMMARY=$(echo "$RESPONSE" | jq -r '.fields.summary // empty')
+          
+          if [ -n "$JIRA_SUMMARY" ]; then
+            echo "✅ Summary: $JIRA_SUMMARY"
+          else
+            echo "❌ Could not fetch summary from Jira API."
+          fi
           echo "summary=$JIRA_SUMMARY" >> $GITHUB_OUTPUT
           echo "::endgroup::"
 
@@ -41,9 +59,16 @@ jobs:
           USER_MAP: ${{ secrets.GOOGLE_CHAT_USERS_MAPPER }}
         run: |
           echo "::group::Mapping GitHub User to Google Chat ID"
+          echo "$USER_MAP"
           GH_LOGIN="${{ github.event.pull_request.user.login }}"
           GH_NAME="${{ github.event.pull_request.user.name }}"
+          echo "Fetching commit email for $GH_LOGIN..."
           GH_EMAIL=$(curl -s -H "Authorization: token $GH_TOKEN" ${{ github.event.pull_request.commits_url }} | jq -r '.[0].commit.author.email // empty')
+
+          echo "Raw Data from GitHub:"
+          echo "  - Login: $GH_LOGIN"
+          echo "  - Name:  $GH_NAME"
+          echo "  - Email: $GH_EMAIL"
 
           clean_val() {
             echo "$1" | tr '[:upper:]' '[:lower:]' | sed 's/[-_.]/ /g' | xargs
@@ -55,18 +80,43 @@ jobs:
           T_FIRST=$(echo "$C_NAME" | awk '{print $1}')
           T_LAST=$(echo "$C_NAME" | awk '{print $NF}')
 
-          GCHAT_ID=$(echo "$USER_MAP" | jq -r "
-            def clean: ascii_downcase | gsub(\"[-_.]\"; \" \") | gsub(\"\\\\s+\"; \" \") | sub(\"^\\\\s+\"; \"\") | sub(\"\\\\s+$\"; \"\");
-            .[] | select(
-              (.email | ascii_downcase == \"$C_EMAIL\") or 
-              (.name | clean == \"$C_NAME\") or 
-              (.name | clean == \"$C_LOGIN\") or
-              ((.name | clean | contains(\"$T_FIRST\")) and (.name | clean | contains(\"$T_LAST\")))
-            ) | .id" | head -1 | grep -v "null" || echo "")
+          echo "Normalized Data:"
+          echo "  - Clean Login: $C_LOGIN"
+          echo "  - Clean Name:  $C_NAME"
+          echo "  - Tokens:      [$T_FIRST] [$T_LAST]"
+
+          GCHAT_ID=""
+
+          echo "Searching in Mapper JSON..."
+          
+          GCHAT_ID=$(echo "$USER_MAP" | jq -r ".[] | select(.email | ascii_downcase == \"$C_EMAIL\") | .id" | head -1 | grep -v "null" || echo "")
+          [ -z "$GCHAT_ID" ] || echo "✅ Match found via Tier 1 (Email)"
+
+          if [ -z "$GCHAT_ID" ]; then
+            GCHAT_ID=$(echo "$USER_MAP" | jq -r ".[] | select((.name | ascii_downcase | gsub(\"[-_.]\"; \" \") | gsub(\"\\\\s+\"; \" \")) == \"$C_NAME\") | .id" | head -1 | grep -v "null" || echo "")
+            [ -z "$GCHAT_ID" ] || echo "✅ Match found via Tier 2 (Profile Name)"
+          fi
+
+          if [ -z "$GCHAT_ID" ]; then
+            GCHAT_ID=$(echo "$USER_MAP" | jq -r ".[] | select((.name | ascii_downcase | gsub(\"[-_.]\"; \" \") | gsub(\"\\\\s+\"; \" \")) == \"$C_LOGIN\") | .id" | head -1 | grep -v "null" || echo "")
+            [ -z "$GCHAT_ID" ] || echo "✅ Match found via Tier 3 (Username)"
+          fi
+
+          if [ -z "$GCHAT_ID" ]; then
+            GCHAT_ID=$(echo "$USER_MAP" | jq -r ".[] | select((.name | ascii_downcase | contains(\"$T_FIRST\")) and (.name | ascii_downcase | contains(\"$T_LAST\"))) | .id" | head -1 | grep -v "null" || echo "")
+            [ -z "$GCHAT_ID" ] || echo "✅ Match found via Tier 4 (Fuzzy tokens)"
+          fi
+
+          if [ -z "$GCHAT_ID" ]; then
+            echo "❌ No match found in any tier. Fallback to @$GH_LOGIN will be used."
+          fi
 
           echo "gchat_id=$GCHAT_ID" >> $GITHUB_OUTPUT
           echo "::endgroup::"
 
+  notify-gchat:
+    runs-on: ubuntu-latest
+    steps:
       - name: Post to Google Chat
         env:
           WEBHOOK: ${{ secrets.CODE_REVIEW_GOOGLE_CHAT_WEBHOOK }}
@@ -78,23 +128,38 @@ jobs:
           AUTHOR_GCHAT_ID: ${{ steps.mapper.outputs.gchat_id }}
           PR_AUTHOR_LOGIN: ${{ github.event.pull_request.user.login }}
         run: |
-          echo "::group::Sending Webhook"
+          echo "::group::Sending Webhook to Google Chat"
           
+          # 1. Monta o cabeçalho
           if [ -n "$TICKET" ] && [ -n "$JIRA_SUMMARY" ]; then
             HEADER="$JIRA_SUMMARY\n$PR_TITLE"
           else
             HEADER="$PR_TITLE"
           fi
 
+          # 2. Monta a linha do autor
           if [ -n "$AUTHOR_GCHAT_ID" ]; then
             AUTHOR_LINE="*Autor:* <users/$AUTHOR_GCHAT_ID>"
           else
             AUTHOR_LINE="*Autor:* @$PR_AUTHOR_LOGIN"
           fi
 
+          # 3. Monta o corpo da mensagem
           MESSAGE="$HEADER\n\n$AUTHOR_LINE\n\n<users/$REVIEWER_ID>\n\n*PR:* $PR_URL"
 
-          PAYLOAD=$(jq -n --arg msg "$MESSAGE" '{"text": $msg}')
+          # 4. ENVIO SEGURO: Usa o jq para criar um JSON válido sem erros de escape ou quebra de linha
+          JSON_PAYLOAD=$(jq -n --arg msg "$MESSAGE" '{"text": $msg}')
 
-          curl -s -X POST "$WEBHOOK" -H 'Content-Type: application/json' -d "$PAYLOAD"
+          echo "Enviando JSON Payload..."
+          RESPONSE=$(curl -s -X POST "$WEBHOOK" \
+            -H 'Content-Type: application/json' \
+            -d "$JSON_PAYLOAD")
+          
+          echo "Google API Response: $RESPONSE"
+          
+          # Verifica se a resposta contém erro
+          if echo "$RESPONSE" | grep -q "error"; then
+            echo "❌ Erro ao enviar para o Google Chat."
+            exit 1
+          fi
           echo "::endgroup::"
