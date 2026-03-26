@@ -28,36 +28,46 @@ jobs:
           JIRA_SUMMARY=$(echo "$RESPONSE" | jq -r '.fields.summary // empty')
           echo "summary=$JIRA_SUMMARY" >> $GITHUB_OUTPUT
 
-      - name: Advanced User Mapping (Email > Name > Login)
+      - name: Advanced User Mapping (Token-based Fallbacks)
         id: mapper
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           USER_MAP: ${{ vars.GOOGLE_CHAT_USERS_MAPPER }}
         run: |
-          GH_LOGIN="${{ github.event.pull_request.user.login }}"
-          GH_NAME="${{ github.event.pull_request.user.name }}"
-          
-          GH_EMAIL=$(curl -s -H "Authorization: token $GH_TOKEN" ${{ github.event.pull_request.commits_url }} | jq -r '.[0].commit.author.email // empty')
-          
-          GH_EMAIL_LOWER=$(echo "$GH_EMAIL" | tr '[:upper:]' '[:lower:]')
-          GH_NAME_LOWER=$(echo "$GH_NAME" | tr '[:upper:]' '[:lower:]')
-          GH_LOGIN_LOWER=$(echo "$GH_LOGIN" | tr '[:upper:]' '[:lower:]')
+          LOGIN="${{ github.event.pull_request.user.login }}"
+          NAME="${{ github.event.pull_request.user.name }}"
+          EMAIL=$(curl -s -H "Authorization: token $GH_TOKEN" ${{ github.event.pull_request.commits_url }} | jq -r '.[0].commit.author.email // empty')
 
-          echo "Buscando ID para: Email($GH_EMAIL_LOWER), Nome($GH_NAME_LOWER), Login($GH_LOGIN_LOWER)"
+          normalize() {
+            echo "$1" | tr '[:upper:]' '[:lower:]' | sed 's/[-_.]/ /g' | xargs
+          }
 
-          GCHAT_ID=$(echo "$USER_MAP" | jq -r ".[] | select(.email | ascii_downcase == \"$GH_EMAIL_LOWER\") | .id" | head -1)
+          CLEAN_LOGIN=$(normalize "$LOGIN")
+          CLEAN_NAME=$(normalize "${NAME:-$LOGIN}")
+          CLEAN_EMAIL=$(echo "$EMAIL" | tr '[:upper:]' '[:lower:]')
+          
+          FIRST_NAME=$(echo "$CLEAN_NAME" | awk '{print $1}')
+          LAST_NAME=$(echo "$CLEAN_NAME" | awk '{print $NF}')
+
+          echo "Buscando match para: Login($CLEAN_LOGIN), Nome($CLEAN_NAME), Email($CLEAN_EMAIL)"
+
+          GCHAT_ID=$(echo "$USER_MAP" | jq -r ".[] | select(.email | ascii_downcase == \"$CLEAN_EMAIL\") | .id" | head -1)
 
           if [ -z "$GCHAT_ID" ] || [ "$GCHAT_ID" == "null" ]; then
-            GCHAT_ID=$(echo "$USER_MAP" | jq -r ".[] | select(.name | ascii_downcase == \"$GH_NAME_LOWER\") | .id" | head -1)
+            GCHAT_ID=$(echo "$USER_MAP" | jq -r ".[] | select((.name | ascii_downcase | gsub(\"[-_.]\"; \" \") | gsub(\"\\\\s+\"; \" \") | trim) == \"$CLEAN_NAME\") | .id" | head -1)
           fi
 
           if [ -z "$GCHAT_ID" ] || [ "$GCHAT_ID" == "null" ]; then
-            GCHAT_ID=$(echo "$USER_MAP" | jq -r ".[] | select(.name | ascii_downcase == \"$GH_LOGIN_LOWER\") | .id" | head -1)
+            GCHAT_ID=$(echo "$USER_MAP" | jq -r ".[] | select((.name | ascii_downcase | gsub(\"[-_.]\"; \" \") | gsub(\"\\\\s+\"; \" \") | trim) == \"$CLEAN_LOGIN\") | .id" | head -1)
+          fi
+
+          if [ -z "$GCHAT_ID" ] || [ "$GCHAT_ID" == "null" ]; then
+            GCHAT_ID=$(echo "$USER_MAP" | jq -r ".[] | select((.name | ascii_downcase | contains(\"$FIRST_NAME\")) and (.name | ascii_downcase | contains(\"$LAST_NAME\"))) | .id" | head -1)
           fi
 
           FINAL_ID=$(echo "$GCHAT_ID" | grep -v "null" || echo "")
           echo "gchat_id=$FINAL_ID" >> $GITHUB_OUTPUT
-          echo "ID Encontrado: ${FINAL_ID:-Nenhum}"
+          echo "Match Final: ${FINAL_ID:-Nenhum ID encontrado}"
 
       - name: Post to Google Chat
         env:
@@ -87,6 +97,4 @@ jobs:
 
           MESSAGE_TEXT="$HEADER\n\n$AUTHOR_LINE\n\n<users/${REVIEWER_ID}>\n\n*PR:* $PR_URL"
 
-          curl -X POST "$WEBHOOK" \
-            -H 'Content-Type: application/json' \
-            -d "{\"text\": \"$MESSAGE_TEXT\"}"
+          curl -X POST "$WEBHOOK" -H 'Content-Type: application/json' -d "{\"text\": \"$MESSAGE_TEXT\"}"
