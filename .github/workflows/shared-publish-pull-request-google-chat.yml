@@ -8,6 +8,9 @@ jobs:
   notify-gchat:
     runs-on: ubuntu-latest
     steps:
+      - name: Debug Workflow Version
+        run: echo "Executando versão atualizada do workflow em 2026-03-26 15:00"
+
       - name: Extract Jira ticket from branch name
         id: extract
         run: |
