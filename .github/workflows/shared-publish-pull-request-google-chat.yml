@@ -59,7 +59,7 @@ jobs:
           USER_MAP: ${{ secrets.GOOGLE_CHAT_USERS_MAPPER }}
         run: |
           echo "::group::Mapping GitHub User to Google Chat ID"
-          
+          echo "$USER_MAP"
           GH_LOGIN="${{ github.event.pull_request.user.login }}"
           GH_NAME="${{ github.event.pull_request.user.name }}"
           echo "Fetching commit email for $GH_LOGIN..."
