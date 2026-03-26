@@ -12,9 +12,8 @@ jobs:
         id: extract
         run: |
           BRANCH="${{ github.event.pull_request.head.ref }}"
-          TICKET=$(echo "$BRANCH" | grep -oE '[A-Z]+-[0-9]+' | head -1)
+          TICKET=$(echo "$BRANCH" | grep -oE '[A-Z]+-[0-9]+' | head -1 || true)
           echo "ticket=$TICKET" >> $GITHUB_OUTPUT
-          echo "Extracted ticket: $TICKET"
 
       - name: Fetch Jira Data
         if: steps.extract.outputs.ticket != ''
@@ -25,14 +24,28 @@ jobs:
           JIRA_BASE_URL: "https://weareglobals.atlassian.net"
         run: |
           TICKET="${{ steps.extract.outputs.ticket }}"
-
           RESPONSE=$(curl -s -u "$JIRA_USER_EMAIL:$JIRA_API_TOKEN" \
             -H "Accept: application/json" \
             "$JIRA_BASE_URL/rest/api/3/issue/$TICKET?fields=summary")
-
-          JIRA_SUMMARY=$(echo "$RESPONSE" | jq -r '.fields.summary')
-
+          
+          JIRA_SUMMARY=$(echo "$RESPONSE" | jq -r '.fields.summary // empty')
           echo "summary=$JIRA_SUMMARY" >> $GITHUB_OUTPUT
+
+      - name: Map GitHub User to Google Chat ID
+        id: mapper
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          USER_MAP: ${{ vars.GOOGLE_CHAT_USERS_MAPPER }}
+        run: |
+          AUTHOR_LOGIN="${{ github.event.pull_request.user.login }}"
+          
+          EMAIL=$(curl -s -H "Authorization: token $GH_TOKEN" https://api.github.com/users/$AUTHOR_LOGIN | jq -r '.email')
+          if [ "$EMAIL" == "null" ] || [ -z "$EMAIL" ]; then
+            EMAIL=$(curl -s -H "Authorization: token $GH_TOKEN" ${{ github.event.pull_request.commits_url }} | jq -r '.[0].commit.author.email')
+          fi
+          
+          GCHAT_ID=$(echo "$USER_MAP" | jq -r ".[] | select(.email == \"$EMAIL\") | .id // empty")
+          echo "gchat_id=$GCHAT_ID" >> $GITHUB_OUTPUT
 
       - name: Post to Google Chat
         env:
@@ -41,25 +54,26 @@ jobs:
           PR_URL: ${{ github.event.pull_request.html_url }}
           TICKET: ${{ steps.extract.outputs.ticket }}
           JIRA_SUMMARY: ${{ steps.jira.outputs.summary }}
-          USER_ID: ${{ secrets.GOOGLE_CHAT_USER_ID_TO_CODE_REVIEW }}
+          REVIEWER_ID: ${{ secrets.GOOGLE_CHAT_USER_ID_TO_CODE_REVIEW }}
+          AUTHOR_GCHAT_ID: ${{ steps.mapper.outputs.gchat_id }}
           PR_AUTHOR_LOGIN: ${{ github.event.pull_request.user.login }}
-          PR_AUTHOR_NAME: ${{ github.event.pull_request.user.name }}
         run: |
           ESCAPED_PR_TITLE=$(echo "$PR_TITLE" | sed 's/"/\\"/g')
 
-          if [ -n "$PR_AUTHOR_NAME" ] && [ "$PR_AUTHOR_NAME" != "null" ]; then
-            AUTHOR_LINE="$PR_AUTHOR_NAME (@$PR_AUTHOR_LOGIN)"
-          else
-            AUTHOR_LINE="@$PR_AUTHOR_LOGIN"
-          fi
-          ESCAPED_AUTHOR=$(echo "$AUTHOR_LINE" | sed 's/"/\\"/g')
-
-          if [ -n "$TICKET" ]; then
+          if [ -n "$TICKET" ] && [ -n "$JIRA_SUMMARY" ]; then
             ESCAPED_SUMMARY=$(echo "$JIRA_SUMMARY" | sed 's/"/\\"/g')
-            MESSAGE_TEXT="$ESCAPED_SUMMARY\n$ESCAPED_PR_TITLE\n\n*Autor:* $ESCAPED_AUTHOR\n\n<users/${USER_ID}>\n\n*Task:* https://weareglobals.atlassian.net/browse/$TICKET\n\n*PR:* $PR_URL"
+            HEADER="$ESCAPED_SUMMARY\n$ESCAPED_PR_TITLE"
           else
-            MESSAGE_TEXT="$ESCAPED_PR_TITLE\n\n*Autor:* $ESCAPED_AUTHOR\n\n<users/${USER_ID}>\n\n*PR:* $PR_URL"
+            HEADER="$ESCAPED_PR_TITLE"
           fi
+
+          if [ -n "$AUTHOR_GCHAT_ID" ]; then
+            AUTHOR_LINE="*Autor:* <users/$AUTHOR_GCHAT_ID>"
+          else
+            AUTHOR_LINE="*Autor:* @$PR_AUTHOR_LOGIN"
+          fi
+
+          MESSAGE_TEXT="$HEADER\n\n$AUTHOR_LINE\n\n<users/${REVIEWER_ID}>\n\n*PR:* $PR_URL"
 
           curl -X POST "$WEBHOOK" \
             -H 'Content-Type: application/json' \
