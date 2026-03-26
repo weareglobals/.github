@@ -56,7 +56,7 @@ jobs:
         id: mapper
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          USER_MAP: ${{ vars.GOOGLE_CHAT_USERS_MAPPER }}
+          USER_MAP: ${{ secrets.GOOGLE_CHAT_USERS_MAPPER }}
         run: |
           echo "::group::Mapping GitHub User to Google Chat ID"
           
