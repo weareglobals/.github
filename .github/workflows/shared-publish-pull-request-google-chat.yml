@@ -121,6 +121,7 @@ jobs:
           PR_URL: ${{ github.event.pull_request.html_url }}
           TICKET: ${{ steps.extract.outputs.ticket }}
           JIRA_SUMMARY: ${{ steps.jira.outputs.summary }}
+          JIRA_BASE_URL: "https://weareglobals.atlassian.net"
           REVIEWER_ID: ${{ secrets.GOOGLE_CHAT_USER_ID_TO_CODE_REVIEW }}
           AUTHOR_GCHAT_ID: ${{ steps.mapper.outputs.gchat_id }}
           PR_AUTHOR_LOGIN: ${{ github.event.pull_request.user.login }}
@@ -141,7 +142,13 @@ jobs:
             AUTHOR_LINE="*Autor:* @$PR_AUTHOR_LOGIN"
           fi
 
-          MESSAGE_TEXT="$HEADER\n\n$AUTHOR_LINE\n\n<users/${REVIEWER_ID}>\n\n*PR:* $PR_URL"
+          if [ -n "$TICKET" ]; then
+            TASK_LINE="*Task:* $JIRA_BASE_URL/browse/$TICKET"
+          else
+            TASK_LINE=""
+          fi
+
+          MESSAGE_TEXT="$HEADER\n\n$AUTHOR_LINE\n\n<users/${REVIEWER_ID}>\n\n$TASK_LINE\n*PR:* $PR_URL"
 
           echo "Final Message Payload:"
           echo -e "$MESSAGE_TEXT"
