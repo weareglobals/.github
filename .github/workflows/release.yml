@@ -1,0 +1,52 @@
+# Versao, tag e release automaticas a cada merge na main/master (ver GOVERNANCA.md).
+# Chamado por .github/workflows/globals-release.yml de cada repo. Nao faz commit na main:
+# a versao sai dos commits desde a ultima tag vX.Y.Z (Conventional Commits).
+#   feat -> minor | fix e demais -> patch | "!" ou BREAKING CHANGE -> major
+# Primeira release de um repo sem tag: v1.0.0 (o que ja esta em producao e a linha de base).
+# So o GitHub Actions cria tag v* (ruleset tags-de-versao); tag publicada nao muda nem some.
+name: release
+
+on:
+  workflow_call:
+
+permissions:
+  contents: write
+
+jobs:
+  versionar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+
+      - name: Calcular versao e publicar release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git fetch --tags --force --quiet
+          SEMVER='v[0-9]*.[0-9]*.[0-9]*'
+          # Idempotente: rodou de novo no mesmo commit, nao faz nada
+          if git tag --points-at "$GITHUB_SHA" --list "$SEMVER" | grep -q .; then
+            echo "Commit ja versionado: $(git tag --points-at "$GITHUB_SHA" --list "$SEMVER" | head -1)"; exit 0
+          fi
+          ultima=$(git describe --tags --abbrev=0 --match "$SEMVER" "$GITHUB_SHA" 2>/dev/null || true)
+          if [ -z "$ultima" ]; then
+            nova=v1.0.0
+          else
+            msgs=$(git log --no-merges --format='%s%n%b' "$ultima..$GITHUB_SHA")
+            [ -n "$msgs" ] || { echo "Nada novo desde $ultima."; exit 0; }
+            IFS=. read -r maj min pat <<<"${ultima#v}"
+            if grep -qE '^[a-z]+(\([^)]*\))?!:|^BREAKING CHANGE' <<<"$msgs"; then maj=$((maj+1)); min=0; pat=0
+            elif grep -qE '^feat(\([^)]*\))?:' <<<"$msgs"; then min=$((min+1)); pat=0
+            else pat=$((pat+1)); fi
+            nova="v$maj.$min.$pat"
+          fi
+          # Nunca reaproveita uma tag que ja existe (merges em sequencia)
+          while git rev-parse -q --verify "refs/tags/$nova" >/dev/null; do
+            IFS=. read -r maj min pat <<<"${nova#v}"; nova="v$maj.$min.$((pat+1))"
+          done
+          echo "${ultima:-sem tag} -> $nova"
+          gh release create "$nova" --target "$GITHUB_SHA" --title "$nova" --generate-notes ${ultima:+--notes-start-tag "$ultima"}

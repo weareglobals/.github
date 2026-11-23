@@ -1,0 +1,79 @@
+# Check obrigatorio de governanca da Globals (ver GOVERNANCA.md).
+# Chamado por .github/workflows/globals-governanca.yml de cada repo; aparece como "governanca / verificar".
+name: governanca
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  verificar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Regras de PR (gitflow, titulo, checklist)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TITULO: ${{ github.event.pull_request.title }}
+          CORPO: ${{ github.event.pull_request.body }}
+          BASE: ${{ github.event.pull_request.base.ref }}
+          HEAD: ${{ github.event.pull_request.head.ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          AUTOR: ${{ github.event.pull_request.user.login }}
+        run: |
+          set -uo pipefail
+          ID='[A-Z][A-Z0-9]{0,9}-[0-9]+'
+          TIPOS='feat|fix|perf|refactor|docs|test|build|ci|chore|style|revert'
+          CONV="^(${TIPOS})\(${ID}\)!?: .+"
+          erros=0
+          falha() { echo "::error::$1"; erros=$((erros+1)); }
+          dependabot=false; [ "$AUTOR" = "dependabot[bot]" ] && dependabot=true
+
+          # 1. Origem (gitflow). Vale para todos, inclusive bots.
+          [ "$HEAD_REPO" = "$REPO" ] || falha "PR de fork ($HEAD_REPO) nao e aceito: abra a branch no proprio repo."
+          case "$BASE" in
+            main|master)
+              case "$HEAD" in
+                develop|release/*) ;;
+                hotfix/*)
+                  # hotfix sai da main: nao pode carregar commit que so existe na develop
+                  so_develop=$(gh api "repos/$REPO/compare/$BASE...develop" --jq '[.commits[].sha]|join(" ")' 2>/dev/null || true)
+                  for c in $(gh api "repos/$REPO/compare/$BASE...$HEAD_SHA" --jq '.commits[].sha'); do
+                    [[ " $so_develop " == *" $c "* ]] && { falha "hotfix/* tem que sair da $BASE, mas traz commits da develop ($c). Recrie a branch a partir da $BASE."; break; }
+                  done ;;
+                *) falha "PR para $BASE so vem de develop, release/* ou hotfix/* (veio de $HEAD). Abra o PR para develop." ;;
+              esac ;;
+            develop)
+              case "$HEAD" in
+                feature/*|bugfix/*|hotfix/*|release/*) ;;
+                dependabot/*) $dependabot || falha "dependabot/* e reservado ao Dependabot." ;;
+                *) falha "Branch '$HEAD' fora do gitflow: use feature/CHAVE-N-descricao ou bugfix/CHAVE-N-descricao." ;;
+              esac ;;
+            *) falha "PR para '$BASE': o fluxo e branch de trabalho -> develop -> main." ;;
+          esac
+
+          # 2. Titulo (vira o commit no squash da develop) com o ID do Windshift
+          if [[ "$BASE" =~ ^(main|master)$ && ( "$HEAD" == develop || "$HEAD" == release/* ) ]]; then
+            [[ "$TITULO" =~ ^release:\ .+ ]] || falha "PR de release ($HEAD -> $BASE): titulo 'release: AAAA-MM-DD'."
+          elif ! $dependabot; then
+            [[ "$TITULO" =~ $CONV ]] || falha "Titulo fora do padrao 'tipo(CHAVE-N): descricao', ex.: feat(ONE-157): limite noturno do Pix (tipos: ${TIPOS//|/, })."
+          fi
+
+          # 3. Checklist do template: os quatro itens presentes e marcados
+          if ! $dependabot; then
+            for item in 'Testes' 'segredo' 'Migracao' 'Windshift'; do
+              grep -qiE "^[[:space:]]*[-*] \[[xX]\] .*${item}" <<<"$CORPO" \
+                || falha "Checklist: item '$item' ausente ou desmarcado (o que nao se aplica: marque e escreva 'nao se aplica')."
+            done
+          fi
+
+          if [ "$erros" -gt 0 ]; then
+            echo "$erros problema(s). Regras: https://github.com/weareglobals/.github/blob/main/GOVERNANCA.md"
+            exit 1
+          fi
+          echo "Governanca OK."

@@ -1,23 +1,18 @@
-[#NÚMERO-DA-TASK] Tipo: Descrição breve da alteração
+<!-- Branch: feature/CHAVE-N-descricao ou bugfix/CHAVE-N-descricao (sai da develop); hotfix/CHAVE-N-... (sai da main) -->
+<!-- Titulo: tipo(CHAVE-N): descricao   ex.: feat(ONE-157): limite noturno do Pix -->
+<!-- Release (develop ou release/* -> main): titulo "release: AAAA-MM-DD" -->
 
-🔹 **Contexto:**
-Descreva o motivo da alteração e o problema que está sendo resolvido.
+**Windshift:** https://windshift.weareglobals.com/ <!-- link do ticket -->
 
-🔹 **O que foi feito:**
-- Explicar brevemente as mudanças realizadas.
-- Listar os arquivos principais alterados, se relevante.
-- Destacar melhorias, refatorações ou correções aplicadas.
+### O que muda
+-
 
-🔹 **Como testar:**
-- Passos para validar a implementação.
-- Cenários principais de testes.
-- Links ou referências úteis (se necessário).
+### Como testar
+-
 
-🔹 **Checklist:**
-- [ ] Código revisado  
-- [ ] Testado localmente  
-- [ ] PR revisado por um colega  
-- [ ] Documentação atualizada (se necessário)
-
-🔹 **Outras informações:**
-Se houver impactos conhecidos, pendências ou alguma observação extra, incluir aqui.
+### Checklist
+<!-- Tudo marcado. O que nao se aplica: marque e escreva "nao se aplica". -->
+- [ ] Testes cobrem a mudanca e a suite passa
+- [ ] Sem segredo, credencial ou dado pessoal no codigo, nos logs ou nos testes
+- [ ] Migracao ou mudanca de contrato compativel, com rollback descrito
+- [ ] Evidencia de teste no ticket do Windshift
