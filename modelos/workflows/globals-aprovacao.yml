@@ -27,4 +27,6 @@ jobs:
       group: aprovacao-${{ github.event.pull_request.number || github.event.issue.number }}
       cancel-in-progress: true
     uses: weareglobals/.github/.github/workflows/aprovacao.yml@__SHA__
-    secrets: inherit
+    # so o secret do aviso (menor privilegio): o workflow chamado nunca recebe os outros secrets do repo
+    secrets:
+      GCHAT_APROVACAO_WEBHOOK: ${{ secrets.GCHAT_APROVACAO_WEBHOOK }}
