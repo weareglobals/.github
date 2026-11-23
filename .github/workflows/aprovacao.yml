@@ -36,11 +36,13 @@ jobs:
           APROVADORES: ${{ vars.APROVADORES_CHAT }}
         shell: python3 {0}
         run: |
-          import fnmatch, json, os, re, sys, time, urllib.parse, urllib.request
+          import json, os, re, sys, time, urllib.parse, urllib.request
 
           REPO, PR = os.environ["REPO"], os.environ["PR"]
           TOKEN = os.environ["GH_TOKEN"]
           API = "https://api.github.com"
+          SEM_APONTAMENTOS = re.compile(r"did(n.t| not) find any (major )?issues|no (major )?issues found|"
+                                        r"sem apontamentos|nenhum (problema|apontamento)", re.I)
           ESPERA = 15 * 60   # so espera quando a revisao de IA ja existe e faltam checks ou conversas
           MARCA = "aviso-aprovacao"
 
@@ -120,9 +122,10 @@ jobs:
               for r in reviews:  # review de bot: amarrada ao SHA
                   if r["user"]["type"] == "Bot" and r["commit_id"] == head and r["user"]["login"] != "github-actions[bot]":
                       ia = f"{r['user']['login']} revisou {head[:7]}"
-              for c in comentarios:  # comentario do Codex: depois que o commit chegou
-                  if c["user"]["type"] == "Bot" and "codex" in c["user"]["login"] and c["created_at"] > chegada:
-                      ia = f"{c['user']['login']} revisou {head[:7]}"
+              for c in comentarios:  # comentario do Codex dizendo que concluiu sem apontamentos, depois que o commit chegou
+                  if c["user"]["type"] == "Bot" and "codex" in c["user"]["login"] and c["created_at"] > chegada \
+                          and SEM_APONTAMENTOS.search(c.get("body") or ""):
+                      ia = f"{c['user']['login']} sem apontamentos em {head[:7]}"
               for x in gh_todos(f"repos/{REPO}/issues/{PR}/reactions"):
                   if x["content"] == "+1" and "codex" in x["user"]["login"] and x["created_at"] > chegada:
                       ia = f"{x['user']['login']} sem apontamentos em {head[:7]}"
@@ -238,18 +241,29 @@ jobs:
               return []
 
           def casa(padrao, caminho):
+              # Sintaxe do CODEOWNERS (estilo gitignore): / no inicio ou no meio ancora na raiz; / no fim = diretorio;
+              # * nao cruza /, ** cruza.
               if padrao == "*":
                   return True
-              ancorado = padrao.startswith("/") or "/" in padrao.rstrip("/")
-              p = padrao.lstrip("/")
-              if p.endswith("/"):
-                  return caminho.startswith(p) if ancorado else any(
-                      caminho[i:].startswith(p) for i in [0] + [m.end() for m in re.finditer("/", caminho)])
-              if p.endswith("/**"):
-                  return caminho.startswith(p[:-2])
-              if ancorado:
-                  return fnmatch.fnmatchcase(caminho, p) or caminho.startswith(p + "/")
-              return any(fnmatch.fnmatchcase(parte, p) for parte in caminho.split("/")) or fnmatch.fnmatchcase(caminho, p)
+              diretorio = padrao.endswith("/")
+              ancorado = padrao.startswith("/") or "/" in padrao.strip("/")
+              p = padrao.strip("/")
+              rx, k = "", 0
+              while k < len(p):
+                  if p.startswith("**/", k):
+                      rx += "(?:.*/)?"; k += 3
+                  elif p.startswith("/**", k) and k + 3 == len(p):
+                      rx += "(?:/.*)?"; k += 3
+                  elif p.startswith("**", k):
+                      rx += ".*"; k += 2
+                  elif p[k] == "*":
+                      rx += "[^/]*"; k += 1
+                  elif p[k] == "?":
+                      rx += "[^/]"; k += 1
+                  else:
+                      rx += re.escape(p[k]); k += 1
+              rx = ("^" if ancorado else "^(?:.*/)?") + rx + ("/.*$" if diretorio else "(?:/.*)?$")
+              return re.match(rx, caminho) is not None
 
           def donos_de(regras, caminho):
               donos = []
