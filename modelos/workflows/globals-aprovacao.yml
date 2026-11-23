@@ -19,11 +19,12 @@ permissions:
   issues: write
   checks: read
   statuses: read
-concurrency:
-  group: aprovacao-${{ github.event.pull_request.number || github.event.issue.number }}
-  cancel-in-progress: true
 jobs:
   aprovacao:
     if: github.event_name != 'issue_comment' || (github.event.issue.pull_request && github.event.comment.user.login != 'github-actions[bot]')
+    # no job (nao no workflow): evento ignorado pelo if nao cancela a espera em andamento
+    concurrency:
+      group: aprovacao-${{ github.event.pull_request.number || github.event.issue.number }}
+      cancel-in-progress: true
     uses: weareglobals/.github/.github/workflows/aprovacao.yml@__SHA__
     secrets: inherit
