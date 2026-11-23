@@ -1,0 +1,283 @@
+# Aviso de aprovacao da Globals (ver GOVERNANCA.md, "Revisao e aprovacao").
+# Chamado por .github/workflows/globals-aprovacao.yml de cada repo. Quando o PR fica PRONTO (revisao de IA feita,
+# conversas resolvidas, checks verdes), pede a aprovacao humana no Google Chat marcando quem pode aprovar, e deixa
+# um comentario no PR. Uma vez por commit. Nunca falha o PR: se faltar algo, so registra no log e sai.
+#
+# Configuracao (fora do repo, sem dado pessoal versionado):
+#   secret GCHAT_APROVACAO_WEBHOOK  webhook do espaco do Google Chat
+#   variavel APROVADORES_CHAT       {"pessoas":{"login":"id-google"},"times":{"org/time":["login"]},
+#                                    "padrao":["login"],"repos":{"repo":["login"]}}
+name: aprovacao
+
+on:
+  workflow_call:
+    secrets:
+      GCHAT_APROVACAO_WEBHOOK:
+        required: false
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+  checks: read
+  statuses: read
+
+jobs:
+  avisar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Pedir aprovacao quando o PR estiver pronto
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number || github.event.issue.number }}
+          WEBHOOK: ${{ secrets.GCHAT_APROVACAO_WEBHOOK }}
+          APROVADORES: ${{ vars.APROVADORES_CHAT }}
+        shell: python3 {0}
+        run: |
+          import json, os, re, sys, time, urllib.parse, urllib.request
+
+          REPO, PR = os.environ["REPO"], os.environ["PR"]
+          TOKEN = os.environ["GH_TOKEN"]
+          API = "https://api.github.com"
+          SEM_APONTAMENTOS = re.compile(r"did(n.t| not) find any (major )?issues|no (major )?issues found|"
+                                        r"sem apontamentos|nenhum (problema|apontamento)", re.I)
+          ESPERA = 15 * 60   # so espera quando a revisao de IA ja existe e faltam checks ou conversas
+          MARCA = "aviso-aprovacao"
+
+          def fim(msg):
+              print(msg)
+              sys.exit(0)
+
+          def req(url, data=None, method=None, headers=None):
+              h = {"Authorization": f"Bearer {TOKEN}", "Accept": "application/vnd.github+json",
+                   "X-GitHub-Api-Version": "2022-11-28"}
+              h.update(headers or {})
+              body = json.dumps(data).encode() if data is not None else None
+              r = urllib.request.Request(url, data=body, method=method, headers=h)
+              with urllib.request.urlopen(r, timeout=30) as resp:
+                  return json.loads(resp.read() or b"null"), resp.headers.get("Link", "")
+
+          def gh(path):
+              return req(path if path.startswith("http") else f"{API}/{path}")[0]
+
+          def gh_todos(path):
+              out, url = [], f"{API}/{path}{'&' if '?' in path else '?'}per_page=100"
+              while url:
+                  page, link = req(url)
+                  out += page if isinstance(page, list) else page.get("check_runs", [])
+                  m = re.search(r'<([^>]+)>;\s*rel="next"', link)
+                  url = m.group(1) if m else None
+              return out
+
+          def gql(query, **variables):
+              return req(f"{API}/graphql", {"query": query, "variables": variables}, "POST")[0]
+
+          def momento_do_push(head, data_commit):
+              # Quando o commit chegou ao GitHub (a data do commit pode ser anterior a revisoes antigas)
+              try:
+                  suites = gh(f"repos/{REPO}/commits/{head}/check-suites?per_page=100").get("check_suites", [])
+                  datas = [s["created_at"] for s in suites if s.get("created_at")]
+                  return min(datas) if datas else data_commit
+              except Exception:
+                  return data_commit
+
+          def conversas_abertas():
+              dono, nome = REPO.split("/")
+              q = """query($o:String!,$n:String!,$p:Int!,$c:String){repository(owner:$o,name:$n){pullRequest(number:$p){
+                     reviewThreads(first:100,after:$c){nodes{isResolved} pageInfo{hasNextPage endCursor}}}}}"""
+              abertas, cursor = 0, None
+              while True:
+                  r = gql(q, o=dono, n=nome, p=int(PR), c=cursor)["data"]["repository"]["pullRequest"]["reviewThreads"]
+                  abertas += sum(1 for f in r["nodes"] if not f["isResolved"])
+                  if not r["pageInfo"]["hasNextPage"]:
+                      return abertas
+                  cursor = r["pageInfo"]["endCursor"]
+
+          def avaliar():
+              """('parar'|'esperar'|'pronto', motivo, contexto). Reavalia tudo a cada chamada, inclusive o HEAD."""
+              pr = gh(f"repos/{REPO}/pulls/{PR}")
+              if pr["state"] != "open" or pr["draft"]:
+                  return "parar", "PR fechado ou em rascunho.", None
+              head = pr["head"]["sha"]
+              autor = pr["user"]["login"]
+              comentarios = gh_todos(f"repos/{REPO}/issues/{PR}/comments")
+              if any(f"<!-- {MARCA}:{head} -->" in (c.get("body") or "") for c in comentarios):
+                  return "parar", f"Aprovacao ja pedida para {head[:7]}.", None
+
+              reviews = gh_todos(f"repos/{REPO}/pulls/{PR}/reviews")
+              ultima = {}
+              for r in reviews:
+                  if r["user"]["type"] != "Bot" and r["user"]["login"] != autor \
+                          and r["state"] in ("APPROVED", "CHANGES_REQUESTED", "DISMISSED"):
+                      ultima[r["user"]["login"]] = r
+              if any(r["state"] == "APPROVED" and r["commit_id"] == head for r in ultima.values()):
+                  return "parar", "Ja aprovado neste commit.", None
+
+              # 1. Revisao de IA DESTE commit
+              commit = gh(f"repos/{REPO}/commits/{head}")
+              chegada = momento_do_push(head, commit["commit"]["committer"]["date"])
+              ia = None
+              for r in reviews:  # review de bot: amarrada ao SHA
+                  if r["user"]["type"] == "Bot" and r["commit_id"] == head and r["user"]["login"] != "github-actions[bot]":
+                      ia = f"{r['user']['login']} revisou {head[:7]}"
+              for c in comentarios:  # comentario do Codex dizendo que concluiu sem apontamentos, depois que o commit chegou
+                  if c["user"]["type"] == "Bot" and "codex" in c["user"]["login"] and c["created_at"] > chegada \
+                          and SEM_APONTAMENTOS.search(c.get("body") or ""):
+                      ia = f"{c['user']['login']} sem apontamentos em {head[:7]}"
+              for x in gh_todos(f"repos/{REPO}/issues/{PR}/reactions"):
+                  if x["content"] == "+1" and "codex" in x["user"]["login"] and x["created_at"] > chegada:
+                      ia = f"{x['user']['login']} sem apontamentos em {head[:7]}"
+              # Revisao fora do GitHub (Claude/Codex local): veredito registrado no PR citando o commit
+              veredito = None
+              for c in sorted(comentarios + reviews, key=lambda c: c.get("created_at") or c.get("submitted_at") or ""):
+                  b = c.get("body") or ""
+                  m = re.search(r"VEREDITO:\s*\**\s*(APROVADO|REPROVADO)", b, re.I)
+                  if m and head[:7] in b:
+                      veredito = m.group(1).upper()
+              if veredito == "REPROVADO":
+                  return "parar", f"Ultimo veredito da revisao de IA de {head[:7]}: REPROVADO.", None
+              if veredito == "APROVADO":
+                  ia = f"revisao de IA aprovou {head[:7]}"
+              if not ia:
+                  return "parar", f"Aguardando a revisao de IA do commit {head[:7]}.", None
+
+              # 2. Checks
+              runs = [r for r in gh_todos(f"repos/{REPO}/commits/{head}/check-runs")
+                      if not r["name"].startswith("avisar") and "aprovacao" not in r["name"]]
+              # Vale o resultado: o GitHub as vezes deixa status "in_progress" num check que ja tem conclusao
+              ruins = [r["name"] for r in runs if r.get("conclusion")
+                       and r["conclusion"] not in ("success", "neutral", "skipped")]
+              estado = gh(f"repos/{REPO}/commits/{head}/status")
+              if ruins or estado["state"] in ("failure", "error"):
+                  return "parar", f"Checks com falha: {', '.join(ruins) or 'status do commit'}.", None
+              pendentes = [r["name"] for r in runs if not r.get("conclusion")]
+              if estado["state"] == "pending" and estado["total_count"]:
+                  pendentes.append("status do commit")
+
+              # 3. Conversas
+              abertas = conversas_abertas()
+              if pendentes or abertas:
+                  falta = ([f"checks rodando ({', '.join(pendentes)})"] if pendentes else []) + \
+                          ([f"{abertas} conversa(s) sem resolver"] if abertas else [])
+                  return "esperar", "; ".join(falta), None
+              return "pronto", "", {"pr": pr, "head": head, "autor": autor, "ia": ia, "commit": commit}
+
+          def principal():
+              inicio = time.time()
+              while True:
+                  estado, motivo, ctx = avaliar()
+                  if estado == "pronto":
+                      break
+                  if estado == "parar":
+                      fim(motivo)
+                  if time.time() - inicio > ESPERA:
+                      fim(f"{motivo}. Quando resolver, qualquer comentario no PR (ex.: /aprovacao) tenta de novo.")
+                  print(f"esperando: {motivo}")
+                  time.sleep(30)
+              pr, head, autor, ia, commit = ctx["pr"], ctx["head"], ctx["autor"], ctx["ia"], ctx["commit"]
+              nome = REPO.split("/")[1]
+
+              # 4. Quem aprova: donos do codigo (CODEOWNERS da base) ou o padrao
+              cfg = json.loads(os.environ.get("APROVADORES") or "{}")
+              pessoas, times = cfg.get("pessoas", {}), cfg.get("times", {})
+              arquivos = [f["filename"] for f in gh_todos(f"repos/{REPO}/pulls/{PR}/files")]
+              regras = codeowners(pr["base"]["ref"])
+              donos = set()
+              for arq in arquivos:
+                  donos.update(donos_de(regras, arq))
+              logins = set()
+              for d in donos:
+                  d = d.lstrip("@")
+                  logins.update(times.get(d, [d]) if "/" in d else [d])
+              excluir = {autor, (commit.get("author") or {}).get("login")}
+              alvo = sorted(logins - excluir)
+              if not alvo:
+                  alvo = sorted(set(cfg.get("repos", {}).get(nome) or cfg.get("padrao", [])) - excluir)
+              if not alvo:
+                  fim("Ninguem configurado para aprovar (variavel APROVADORES_CHAT).")
+
+              # 5. Avisa no Chat e registra no PR
+              corpo = (pr.get("body") or "").split("### Checklist")[0]
+              resumo = [l.strip(" -*#>") for l in corpo.splitlines() if l.strip() and not l.strip().startswith("<!--")]
+              def corta(t, n=240):
+                  return t if len(t) <= n else t[:n].rsplit(" ", 1)[0].rstrip(",.;:") + "…"
+              resumo = "\n".join(corta(l) for l in resumo[:3])
+              marcas = " ".join(f"<users/{pessoas[l]}>" if l in pessoas else f"@{l}" for l in alvo)
+              texto = (f"{marcas} PR pronto para aprovar:\n"
+                       f"*<{pr['html_url']}|{nome}#{PR}: {pr['title']}>*\n"
+                       f"{pr['head']['ref']} → {pr['base']['ref']} · autor {autor} · "
+                       f"{pr['changed_files']} arquivo(s), +{pr['additions']} -{pr['deletions']}\n"
+                       f"{resumo}\n"
+                       f"✅ {ia} · conversas resolvidas · checks verdes\n"
+                       f"Leia o resumo e a revisão no PR e aprove em Files changed → Review changes → Approve.")
+              webhook = os.environ.get("WEBHOOK")
+              if not webhook:
+                  fim("Secret GCHAT_APROVACAO_WEBHOOK ausente: aviso nao enviado.\n" + texto)
+              chave = urllib.parse.quote(f"{REPO}#{PR}", safe="")
+              url = f"{webhook}&threadKey={chave}&messageReplyOption=REPLY_MESSAGE_FALLBACK_TO_NEW_THREAD"
+              r = urllib.request.Request(url, data=json.dumps({"text": texto}).encode(), method="POST",
+                                         headers={"Content-Type": "application/json; charset=UTF-8"})
+              urllib.request.urlopen(r, timeout=30).read()
+              quem = ", ".join(f"@{l}" for l in alvo)
+              req(f"{API}/repos/{REPO}/issues/{PR}/comments",
+                  {"body": f"Aprovação pedida no Google Chat a {quem}: {ia}, conversas resolvidas e checks verdes "
+                           f"no commit {head[:7]}.\n<!-- {MARCA}:{head} -->"}, "POST")
+              print(f"Aprovacao pedida a {quem}.")
+
+          def codeowners(ref):
+              for p in (".github/CODEOWNERS", "CODEOWNERS", "docs/CODEOWNERS"):
+                  try:
+                      c = gh(f"repos/{REPO}/contents/{p}?ref={urllib.parse.quote(ref)}")
+                  except urllib.error.HTTPError:
+                      continue
+                  import base64
+                  texto = base64.b64decode(c["content"]).decode()
+                  regras = []
+                  for linha in texto.splitlines():
+                      linha = linha.split("#")[0].strip()
+                      if linha:
+                          partes = linha.split()
+                          regras.append((partes[0], partes[1:]))
+                  return regras
+              return []
+
+          def casa(padrao, caminho):
+              # Sintaxe do CODEOWNERS (estilo gitignore): / no inicio ou no meio ancora na raiz; / no fim = diretorio;
+              # * nao cruza /, ** cruza.
+              if padrao == "*":
+                  return True
+              diretorio = padrao.endswith("/")
+              ancorado = padrao.startswith("/") or "/" in padrao.strip("/")
+              p = padrao.strip("/")
+              rx, k = "", 0
+              while k < len(p):
+                  if p.startswith("**/", k):
+                      rx += "(?:.*/)?"; k += 3
+                  elif p.startswith("/**", k) and k + 3 == len(p):
+                      rx += "(?:/.*)?"; k += 3
+                  elif p.startswith("**", k):
+                      rx += ".*"; k += 2
+                  elif p[k] == "*":
+                      rx += "[^/]*"; k += 1
+                  elif p[k] == "?":
+                      rx += "[^/]"; k += 1
+                  else:
+                      rx += re.escape(p[k]); k += 1
+              rx = ("^" if ancorado else "^(?:.*/)?") + rx + ("/.*$" if diretorio else "(?:/.*)?$")
+              return re.match(rx, caminho) is not None
+
+          def donos_de(regras, caminho):
+              donos = []
+              for padrao, quem in regras:
+                  if casa(padrao, caminho):
+                      donos = quem
+              return donos
+
+          try:
+              principal()
+          except SystemExit:
+              raise
+          except Exception as e:  # nunca derruba o PR
+              print(f"::warning::aviso de aprovacao nao enviado: {e}")
