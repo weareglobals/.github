@@ -3,12 +3,14 @@
 # Pede a aprovacao humana no Google Chat quando o PR fica pronto (revisao de IA, conversas resolvidas, checks verdes).
 name: aprovacao
 on:
+  # synchronize: commit novo cancela a espera do commit anterior
   pull_request:
-    types: [ready_for_review, synchronize]   # synchronize: commit novo cancela a espera do commit anterior
+    types: [ready_for_review, synchronize]
   pull_request_review:
     types: [submitted]
+  # resposta numa conversa (so clicar em Resolver nao dispara workflow)
   pull_request_review_comment:
-    types: [created]                         # resposta numa conversa (resolver sozinho nao dispara workflow)
+    types: [created]
   issue_comment:
     types: [created]
 permissions:
