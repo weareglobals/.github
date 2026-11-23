@@ -1,0 +1,27 @@
+# Padrao da Globals: nao editar aqui. Regras em https://github.com/weareglobals/.github/blob/main/GOVERNANCA.md
+# Fixado por commit do weareglobals/.github (atualizado pelo gov-bootstrap.sh), nunca @main.
+# Pede a aprovacao humana no Google Chat quando o PR fica pronto (revisao de IA, conversas resolvidas, checks verdes).
+name: aprovacao
+on:
+  pull_request:
+    types: [ready_for_review]
+  pull_request_review:
+    types: [submitted]
+  pull_request_review_thread:
+    types: [resolved]
+  issue_comment:
+    types: [created]
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+  checks: read
+  statuses: read
+concurrency:
+  group: aprovacao-${{ github.event.pull_request.number || github.event.issue.number }}
+  cancel-in-progress: true
+jobs:
+  aprovacao:
+    if: github.event_name != 'issue_comment' || (github.event.issue.pull_request && github.event.comment.user.login != 'github-actions[bot]')
+    uses: weareglobals/.github/.github/workflows/aprovacao.yml@__SHA__
+    secrets: inherit

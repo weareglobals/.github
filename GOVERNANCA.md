@@ -70,13 +70,26 @@ O check obrigatorio **governanca / verificar** (so vale vindo do GitHub Actions)
 PRs de release (`develop` -> `main`) tem titulo `release: AAAA-MM-DD`; os commits ja foram checados na `develop`.
 PRs do Dependabot (branch `dependabot/*`, para a `develop`) sao dispensados so de ID e checklist; o resto vale.
 
-## Revisao de codigo
+## Revisao e aprovacao
 
-1. **Codex** revisa automaticamente todo PR de todo repo (revisao automatica ligada para a organizacao inteira no
-   Codex). Regras especificas de cada repo ficam no `AGENTS.md`, secao `## Review guidelines`.
-2. Todo apontamento do Codex abre uma conversa no PR, e **o merge so sai com as conversas resolvidas**: corrigir, ou
+A IA revisa o codigo; o humano aprova a mudanca. Ninguem precisa ler o diff linha a linha, mas quem aprova responde
+pelo que entrou: "e isso que queriamos, e o risco e aceitavel?".
+
+1. **Revisao de IA.** O Codex revisa o PR (revisao automatica da organizacao). Revisao feita fora do GitHub (Claude ou
+   Codex local) vale se for registrada no PR com `VEREDITO: APROVADO` (ou `REPROVADO`) e o commit revisado.
+   Regras especificas de cada repo ficam no `AGENTS.md`, secao `## Review guidelines`.
+2. **Conversas resolvidas.** Todo apontamento abre uma conversa, e o merge so sai com todas resolvidas: corrigir, ou
    responder por que nao se aplica e resolver.
-3. **1 aprovacao humana** obrigatoria, de alguem que nao deu o ultimo push. A revisao do Codex nao conta como aprovacao.
+3. **Aviso automatico de aprovacao** (`globals-aprovacao.yml`). Quando o PR fica pronto (revisao de IA do commit atual,
+   conversas resolvidas e checks verdes), o GitHub avisa no espaco **#code-review** do Google Chat marcando quem pode
+   aprovar, com o resumo do PR, e registra o pedido num comentario do PR. Um aviso por commit; commit novo, novo aviso.
+   - Quem e marcado: os donos dos arquivos alterados no `CODEOWNERS` da branch de destino; sem dono, o aprovador padrao.
+     O autor nunca e marcado.
+   - O mapa login do GitHub -> pessoa no Chat fica na variavel da organizacao `APROVADORES_CHAT` (fora do repo, sem
+     dado pessoal versionado). Pessoa nova: incluir la. O webhook fica no secret `GCHAT_APROVACAO_WEBHOOK`.
+4. **1 aprovacao humana** obrigatoria, de alguem que nao deu o ultimo push. A revisao de IA nao conta como aprovacao, e
+   o token do Actions nao aprova PR. Quem aprova le o resumo e a revisao no PR, e aprova em Files changed -> Review
+   changes -> Approve.
 
 ## Versoes, tags e releases
 
@@ -93,6 +106,7 @@ PRs do Dependabot (branch `dependabot/*`, para a `develop`) sao dispensados so d
 |---|---|
 | `.github/workflows/globals-governanca.yml` | `modelos/workflows/` deste repo, fixado num commit deste repo |
 | `.github/workflows/globals-release.yml` | `modelos/workflows/` deste repo, fixado num commit deste repo |
+| `.github/workflows/globals-aprovacao.yml` | `modelos/workflows/` deste repo, fixado num commit deste repo (so na `develop`) |
 | `.github/CODEOWNERS` | `/.github/` com `@weareglobals/aprovadores-infra`; nos repos de infra, o repo inteiro |
 | Template de PR | `.github/pull_request_template.md` deste repo vale para todo repo sem template proprio |
 
