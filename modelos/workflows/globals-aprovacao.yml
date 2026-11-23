@@ -4,11 +4,11 @@
 name: aprovacao
 on:
   pull_request:
-    types: [ready_for_review]
+    types: [ready_for_review, synchronize]   # synchronize: commit novo cancela a espera do commit anterior
   pull_request_review:
     types: [submitted]
-  pull_request_review_thread:
-    types: [resolved]
+  pull_request_review_comment:
+    types: [created]                         # resposta numa conversa (resolver sozinho nao dispara workflow)
   issue_comment:
     types: [created]
 permissions:

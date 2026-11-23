@@ -83,6 +83,9 @@ pelo que entrou: "e isso que queriamos, e o risco e aceitavel?".
 3. **Aviso automatico de aprovacao** (`globals-aprovacao.yml`). Quando o PR fica pronto (revisao de IA do commit atual,
    conversas resolvidas e checks verdes), o GitHub avisa no espaco **#code-review** do Google Chat marcando quem pode
    aprovar, com o resumo do PR, e registra o pedido num comentario do PR. Um aviso por commit; commit novo, novo aviso.
+   - Dispara com review, resposta em conversa, comentario no PR e commit novo. So clicar em "Resolver" numa conversa nao
+     dispara workflow no GitHub: se o PR ficou pronto assim e o aviso nao veio, comente `/aprovacao` no PR.
+   - Com a revisao de IA feita, espera ate 15 min pelos checks e conversas que faltam; depois disso, `/aprovacao`.
    - Quem e marcado: os donos dos arquivos alterados no `CODEOWNERS` da branch de destino; sem dono, o aprovador padrao.
      O autor nunca e marcado.
    - O mapa login do GitHub -> pessoa no Chat fica na variavel da organizacao `APROVADORES_CHAT` (fora do repo, sem

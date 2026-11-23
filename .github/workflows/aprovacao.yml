@@ -41,7 +41,7 @@ jobs:
           REPO, PR = os.environ["REPO"], os.environ["PR"]
           TOKEN = os.environ["GH_TOKEN"]
           API = "https://api.github.com"
-          ESPERA_CHECKS = 20 * 60
+          ESPERA = 15 * 60   # so espera quando a revisao de IA ja existe e faltam checks ou conversas
           MARCA = "aviso-aprovacao"
 
           def fim(msg):
@@ -72,39 +72,61 @@ jobs:
           def gql(query, **variables):
               return req(f"{API}/graphql", {"query": query, "variables": variables}, "POST")[0]
 
-          def principal():
+          def momento_do_push(head, data_commit):
+              # Quando o commit chegou ao GitHub (a data do commit pode ser anterior a revisoes antigas)
+              try:
+                  suites = gh(f"repos/{REPO}/commits/{head}/check-suites?per_page=100").get("check_suites", [])
+                  datas = [s["created_at"] for s in suites if s.get("created_at")]
+                  return min(datas) if datas else data_commit
+              except Exception:
+                  return data_commit
+
+          def conversas_abertas():
+              dono, nome = REPO.split("/")
+              q = """query($o:String!,$n:String!,$p:Int!,$c:String){repository(owner:$o,name:$n){pullRequest(number:$p){
+                     reviewThreads(first:100,after:$c){nodes{isResolved} pageInfo{hasNextPage endCursor}}}}}"""
+              abertas, cursor = 0, None
+              while True:
+                  r = gql(q, o=dono, n=nome, p=int(PR), c=cursor)["data"]["repository"]["pullRequest"]["reviewThreads"]
+                  abertas += sum(1 for f in r["nodes"] if not f["isResolved"])
+                  if not r["pageInfo"]["hasNextPage"]:
+                      return abertas
+                  cursor = r["pageInfo"]["endCursor"]
+
+          def avaliar():
+              """('parar'|'esperar'|'pronto', motivo, contexto). Reavalia tudo a cada chamada, inclusive o HEAD."""
               pr = gh(f"repos/{REPO}/pulls/{PR}")
               if pr["state"] != "open" or pr["draft"]:
-                  fim("PR fechado ou em rascunho.")
+                  return "parar", "PR fechado ou em rascunho.", None
               head = pr["head"]["sha"]
               autor = pr["user"]["login"]
               comentarios = gh_todos(f"repos/{REPO}/issues/{PR}/comments")
               if any(f"<!-- {MARCA}:{head} -->" in (c.get("body") or "") for c in comentarios):
-                  fim(f"Aprovacao ja pedida para {head[:7]}.")
+                  return "parar", f"Aprovacao ja pedida para {head[:7]}.", None
 
               reviews = gh_todos(f"repos/{REPO}/pulls/{PR}/reviews")
-              humanos = [r for r in reviews if r["user"]["type"] != "Bot" and r["user"]["login"] != autor]
               ultima = {}
-              for r in humanos:
-                  if r["state"] in ("APPROVED", "CHANGES_REQUESTED", "DISMISSED"):
+              for r in reviews:
+                  if r["user"]["type"] != "Bot" and r["user"]["login"] != autor \
+                          and r["state"] in ("APPROVED", "CHANGES_REQUESTED", "DISMISSED"):
                       ultima[r["user"]["login"]] = r
               if any(r["state"] == "APPROVED" and r["commit_id"] == head for r in ultima.values()):
-                  fim("Ja aprovado neste commit.")
+                  return "parar", "Ja aprovado neste commit.", None
 
-              # 1. Revisao de IA do commit atual
+              # 1. Revisao de IA DESTE commit
               commit = gh(f"repos/{REPO}/commits/{head}")
-              data_head = commit["commit"]["committer"]["date"]
+              chegada = momento_do_push(head, commit["commit"]["committer"]["date"])
               ia = None
-              for r in reviews:
+              for r in reviews:  # review de bot: amarrada ao SHA
                   if r["user"]["type"] == "Bot" and r["commit_id"] == head and r["user"]["login"] != "github-actions[bot]":
                       ia = f"{r['user']['login']} revisou {head[:7]}"
-              for c in comentarios:
-                  if c["user"]["type"] == "Bot" and "codex" in c["user"]["login"] and c["created_at"] >= data_head:
+              for c in comentarios:  # comentario do Codex: depois que o commit chegou
+                  if c["user"]["type"] == "Bot" and "codex" in c["user"]["login"] and c["created_at"] > chegada:
                       ia = f"{c['user']['login']} revisou {head[:7]}"
               for x in gh_todos(f"repos/{REPO}/issues/{PR}/reactions"):
-                  if x["content"] == "+1" and "codex" in x["user"]["login"] and x["created_at"] >= data_head:
+                  if x["content"] == "+1" and "codex" in x["user"]["login"] and x["created_at"] > chegada:
                       ia = f"{x['user']['login']} sem apontamentos em {head[:7]}"
-              # Revisao feita fora do GitHub (Claude/Codex local), registrada no PR com o veredito e o commit
+              # Revisao fora do GitHub (Claude/Codex local): veredito registrado no PR citando o commit
               veredito = None
               for c in sorted(comentarios + reviews, key=lambda c: c.get("created_at") or c.get("submitted_at") or ""):
                   b = c.get("body") or ""
@@ -112,39 +134,46 @@ jobs:
                   if m and head[:7] in b:
                       veredito = m.group(1).upper()
               if veredito == "REPROVADO":
-                  fim("Ultimo veredito da revisao de IA neste commit: REPROVADO.")
+                  return "parar", f"Ultimo veredito da revisao de IA de {head[:7]}: REPROVADO.", None
               if veredito == "APROVADO":
                   ia = f"revisao de IA aprovou {head[:7]}"
               if not ia:
-                  fim(f"Aguardando a revisao de IA do commit {head[:7]}.")
+                  return "parar", f"Aguardando a revisao de IA do commit {head[:7]}.", None
 
-              # 2. Conversas resolvidas
-              dono, nome = REPO.split("/")
-              q = """query($o:String!,$n:String!,$p:Int!){repository(owner:$o,name:$n){pullRequest(number:$p){
-                     reviewThreads(first:100){nodes{isResolved}}}}}"""
-              fios = gql(q, o=dono, n=nome, p=int(PR))["data"]["repository"]["pullRequest"]["reviewThreads"]["nodes"]
-              abertos = sum(1 for f in fios if not f["isResolved"])
-              if abertos:
-                  fim(f"{abertos} conversa(s) sem resolver.")
+              # 2. Checks
+              runs = [r for r in gh_todos(f"repos/{REPO}/commits/{head}/check-runs")
+                      if not r["name"].startswith("avisar") and "aprovacao" not in r["name"]]
+              ruins = [r["name"] for r in runs if r["status"] == "completed"
+                       and r["conclusion"] not in ("success", "neutral", "skipped")]
+              estado = gh(f"repos/{REPO}/commits/{head}/status")
+              if ruins or estado["state"] in ("failure", "error"):
+                  return "parar", f"Checks com falha: {', '.join(ruins) or 'status do commit'}.", None
+              pendentes = [r["name"] for r in runs if r["status"] != "completed"]
+              if estado["state"] == "pending" and estado["total_count"]:
+                  pendentes.append("status do commit")
 
-              # 3. Checks verdes (espera os que ainda rodam)
+              # 3. Conversas
+              abertas = conversas_abertas()
+              if pendentes or abertas:
+                  falta = ([f"checks rodando ({', '.join(pendentes)})"] if pendentes else []) + \
+                          ([f"{abertas} conversa(s) sem resolver"] if abertas else [])
+                  return "esperar", "; ".join(falta), None
+              return "pronto", "", {"pr": pr, "head": head, "autor": autor, "ia": ia, "commit": commit}
+
+          def principal():
               inicio = time.time()
               while True:
-                  runs = [r for r in gh_todos(f"repos/{REPO}/commits/{head}/check-runs")
-                          if not r["name"].startswith("avisar") and "aprovacao" not in r["name"]]
-                  ruins = [r["name"] for r in runs if r["status"] == "completed"
-                           and r["conclusion"] not in ("success", "neutral", "skipped")]
-                  estado = gh(f"repos/{REPO}/commits/{head}/status")
-                  if ruins or estado["state"] == "failure" or estado["state"] == "error":
-                      fim(f"Checks com falha: {', '.join(ruins) or 'status do commit'}.")
-                  pendentes = [r["name"] for r in runs if r["status"] != "completed"]
-                  if estado["state"] == "pending" and estado["total_count"]:
-                      pendentes.append("status do commit")
-                  if not pendentes:
+                  estado, motivo, ctx = avaliar()
+                  if estado == "pronto":
                       break
-                  if time.time() - inicio > ESPERA_CHECKS:
-                      fim(f"Checks ainda rodando: {', '.join(pendentes)}. O proximo evento do PR tenta de novo.")
+                  if estado == "parar":
+                      fim(motivo)
+                  if time.time() - inicio > ESPERA:
+                      fim(f"{motivo}. Quando resolver, qualquer comentario no PR (ex.: /aprovacao) tenta de novo.")
+                  print(f"esperando: {motivo}")
                   time.sleep(30)
+              pr, head, autor, ia, commit = ctx["pr"], ctx["head"], ctx["autor"], ctx["ia"], ctx["commit"]
+              nome = REPO.split("/")[1]
 
               # 4. Quem aprova: donos do codigo (CODEOWNERS da base) ou o padrao
               cfg = json.loads(os.environ.get("APROVADORES") or "{}")
