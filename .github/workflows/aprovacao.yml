@@ -146,12 +146,13 @@ jobs:
               # 2. Checks
               runs = [r for r in gh_todos(f"repos/{REPO}/commits/{head}/check-runs")
                       if not r["name"].startswith("avisar") and "aprovacao" not in r["name"]]
-              ruins = [r["name"] for r in runs if r["status"] == "completed"
+              # Vale o resultado: o GitHub as vezes deixa status "in_progress" num check que ja tem conclusao
+              ruins = [r["name"] for r in runs if r.get("conclusion")
                        and r["conclusion"] not in ("success", "neutral", "skipped")]
               estado = gh(f"repos/{REPO}/commits/{head}/status")
               if ruins or estado["state"] in ("failure", "error"):
                   return "parar", f"Checks com falha: {', '.join(ruins) or 'status do commit'}.", None
-              pendentes = [r["name"] for r in runs if r["status"] != "completed"]
+              pendentes = [r["name"] for r in runs if not r.get("conclusion")]
               if estado["state"] == "pending" and estado["total_count"]:
                   pendentes.append("status do commit")
 
