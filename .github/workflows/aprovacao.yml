@@ -201,7 +201,9 @@ jobs:
               # 5. Avisa no Chat e registra no PR
               corpo = (pr.get("body") or "").split("### Checklist")[0]
               resumo = [l.strip(" -*#>") for l in corpo.splitlines() if l.strip() and not l.strip().startswith("<!--")]
-              resumo = "\n".join(f"  {l[:200]}" for l in resumo[:4])
+              def corta(t, n=240):
+                  return t if len(t) <= n else t[:n].rsplit(" ", 1)[0].rstrip(",.;:") + "…"
+              resumo = "\n".join(corta(l) for l in resumo[:3])
               marcas = " ".join(f"<users/{pessoas[l]}>" if l in pessoas else f"@{l}" for l in alvo)
               texto = (f"{marcas} PR pronto para aprovar:\n"
                        f"*<{pr['html_url']}|{nome}#{PR}: {pr['title']}>*\n"
