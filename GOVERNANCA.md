@@ -84,7 +84,8 @@ PRs do Dependabot (branch `dependabot/*`, para a `develop`) sao dispensados so d
   (workflow `globals-release.yml`). Nada e commitado na `main` para isso.
   - `feat` -> minor, `fix` e demais -> patch, `!`/`BREAKING CHANGE` -> major.
   - Primeira release de um repo sem tag: `v1.0.0` (o que ja esta em producao e a linha de base).
-- So o GitHub Actions cria tag `v*`. Ninguem cria tag `v*` a mao, e nenhuma tag `v*` pode ser apagada ou reescrita.
+- Tag `v*` e criada pelo workflow de release; ninguem cria tag `v*` a mao. Nenhuma tag `v*` pode ser apagada ou reescrita
+  (ruleset `tags-de-versao`; o GitHub nao deixa restringir a criacao so ao Actions numa regra da organizacao).
 
 ## Arquivos padrao em cada repo
 
