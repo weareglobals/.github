@@ -34,6 +34,8 @@ jobs:
           PR: ${{ github.event.pull_request.number || github.event.issue.number }}
           WEBHOOK: ${{ secrets.GCHAT_APROVACAO_WEBHOOK }}
           APROVADORES: ${{ vars.APROVADORES_CHAT }}
+          EVENTO: ${{ github.event_name }}
+          ACAO: ${{ github.event.action }}
         shell: python3 {0}
         run: |
           import json, os, re, sys, time, urllib.parse, urllib.request
@@ -45,6 +47,7 @@ jobs:
                                         r"sem apontamentos|nenhum (problema|apontamento)", re.I)
           ESPERA = 15 * 60   # so espera quando a revisao de IA ja existe e faltam checks ou conversas
           MARCA = "aviso-aprovacao"
+          PEDIDO_CODEX = "aviso-aprovacao-codex"
 
           def fim(msg):
               print(msg)
@@ -122,9 +125,26 @@ jobs:
               for r in reviews:  # review de bot: amarrada ao SHA
                   if r["user"]["type"] == "Bot" and r["commit_id"] == head and r["user"]["login"] != "github-actions[bot]":
                       ia = f"{r['user']['login']} revisou {head[:7]}"
-              for c in comentarios:  # comentario do Codex dizendo que concluiu sem apontamentos, depois que o commit chegou
-                  if c["user"]["type"] == "Bot" and "codex" in c["user"]["login"] and c["created_at"] > chegada \
-                          and SEM_APONTAMENTOS.search(c.get("body") or ""):
+              for c in comentarios:
+                  if c["user"]["type"] != "Bot" or "codex" not in c["user"]["login"]:
+                      continue
+                  b = c.get("body") or ""
+                  # Resumo do Codex (editado a cada revisao): estado legivel por maquina, amarrado ao SHA
+                  m = re.search(r"codex-review-state:v1 (\{.*?\}) -->", b)
+                  if m:
+                      try:
+                          cr = json.loads(m.group(1)).get("code_review") or {}
+                      except ValueError:
+                          cr = {}
+                      if cr.get("commit_sha") == head and cr.get("status") == "completed" \
+                              and cr.get("has_unresolved_findings") is False:
+                          ia = f"{c['user']['login']} revisou {head[:7]} sem apontamentos pendentes"
+                      continue
+                  # Recibo "Didn't find any major issues" com "Reviewed commit"; sem o commit, vale o horario
+                  if not SEM_APONTAMENTOS.search(b):
+                      continue
+                  m = re.search(r"Reviewed commit:\**\s*`?([0-9a-f]{7,40})", b)
+                  if (head.startswith(m.group(1)) if m else c["created_at"] > chegada):
                       ia = f"{c['user']['login']} sem apontamentos em {head[:7]}"
               for x in gh_todos(f"repos/{REPO}/issues/{PR}/reactions"):
                   if x["content"] == "+1" and "codex" in x["user"]["login"] and x["created_at"] > chegada:
@@ -164,7 +184,25 @@ jobs:
                   return "esperar", "; ".join(falta), None
               return "pronto", "", {"pr": pr, "head": head, "autor": autor, "ia": ia, "commit": commit}
 
+          def pedir_codex():
+              # O Codex so revisa sozinho ao abrir o PR ou tirar de rascunho: commit novo pede outra revisao
+              if os.environ.get("EVENTO") != "pull_request" or os.environ.get("ACAO") != "synchronize":
+                  return
+              pr = gh(f"repos/{REPO}/pulls/{PR}")
+              head = pr["head"]["sha"]
+              if pr["state"] != "open" or pr["draft"]:
+                  return
+              marca = f"<!-- {PEDIDO_CODEX}:{head} -->"
+              if any(marca in (c.get("body") or "") for c in gh_todos(f"repos/{REPO}/issues/{PR}/comments")):
+                  return
+              req(f"{API}/repos/{REPO}/issues/{PR}/comments", {"body": f"@codex review\n\n{marca}"}, "POST")
+              print(f"Revisao do Codex pedida para {head[:7]}.")
+
           def principal():
+              try:
+                  pedir_codex()
+              except Exception as e:
+                  print(f"::warning::pedido de revisao ao Codex nao enviado: {e}")
               inicio = time.time()
               while True:
                   estado, motivo, ctx = avaliar()
