@@ -34,8 +34,6 @@ jobs:
           PR: ${{ github.event.pull_request.number || github.event.issue.number }}
           WEBHOOK: ${{ secrets.GCHAT_APROVACAO_WEBHOOK }}
           APROVADORES: ${{ vars.APROVADORES_CHAT }}
-          EVENTO: ${{ github.event_name }}
-          ACAO: ${{ github.event.action }}
         shell: python3 {0}
         run: |
           import json, os, re, sys, time, urllib.parse, urllib.request
@@ -47,7 +45,6 @@ jobs:
                                         r"sem apontamentos|nenhum (problema|apontamento)", re.I)
           ESPERA = 15 * 60   # so espera quando a revisao de IA ja existe e faltam checks ou conversas
           MARCA = "aviso-aprovacao"
-          PEDIDO_CODEX = "aviso-aprovacao-codex"
 
           def fim(msg):
               print(msg)
@@ -184,25 +181,7 @@ jobs:
                   return "esperar", "; ".join(falta), None
               return "pronto", "", {"pr": pr, "head": head, "autor": autor, "ia": ia, "commit": commit}
 
-          def pedir_codex():
-              # O Codex so revisa sozinho ao abrir o PR ou tirar de rascunho: commit novo pede outra revisao
-              if os.environ.get("EVENTO") != "pull_request" or os.environ.get("ACAO") != "synchronize":
-                  return
-              pr = gh(f"repos/{REPO}/pulls/{PR}")
-              head = pr["head"]["sha"]
-              if pr["state"] != "open" or pr["draft"]:
-                  return
-              marca = f"<!-- {PEDIDO_CODEX}:{head} -->"
-              if any(marca in (c.get("body") or "") for c in gh_todos(f"repos/{REPO}/issues/{PR}/comments")):
-                  return
-              req(f"{API}/repos/{REPO}/issues/{PR}/comments", {"body": f"@codex review\n\n{marca}"}, "POST")
-              print(f"Revisao do Codex pedida para {head[:7]}.")
-
           def principal():
-              try:
-                  pedir_codex()
-              except Exception as e:
-                  print(f"::warning::pedido de revisao ao Codex nao enviado: {e}")
               inicio = time.time()
               while True:
                   estado, motivo, ctx = avaliar()
