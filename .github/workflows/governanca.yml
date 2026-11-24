@@ -39,7 +39,7 @@ jobs:
           # Repo sem develop (trunk, ex.: GitOps do QA): o PR vai direto para a branch principal.
           # So 404 conta como "sem develop": erro de rede ou de API nao pode afrouxar a regra.
           tem_develop=true
-          st=$(gh api -i "repos/$REPO/branches/develop" 2>/dev/null | head -1 | awk '{print $2}')
+          st=$( (gh api -i "repos/$REPO/branches/develop" 2>/dev/null || true) | head -1 | awk '{print $2}')
           case "$st" in
             200) ;;
             404) tem_develop=false ;;
