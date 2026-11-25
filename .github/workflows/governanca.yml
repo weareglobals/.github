@@ -36,8 +36,24 @@ jobs:
 
           # 1. Origem (gitflow). Vale para todos, inclusive bots.
           [ "$HEAD_REPO" = "$REPO" ] || falha "PR de fork ($HEAD_REPO) nao e aceito: abra a branch no proprio repo."
+          # Repo sem develop (trunk, ex.: GitOps do QA): o PR vai direto para a branch principal.
+          # So 404 conta como "sem develop": erro de rede ou de API nao pode afrouxar a regra.
+          tem_develop=true
+          st=$( (gh api -i "repos/$REPO/branches/develop" 2>/dev/null || true) | head -1 | awk '{print $2}')
+          case "$st" in
+            200) ;;
+            404) tem_develop=false ;;
+            *) falha "Nao consegui verificar se o repo tem develop (HTTP ${st:-sem resposta}). Rode o check de novo." ;;
+          esac
           case "$BASE" in
             main|master)
+              if ! $tem_develop; then
+                case "$HEAD" in
+                  feature/*|bugfix/*|hotfix/*) ;;
+                  dependabot/*) $dependabot || falha "dependabot/* e reservado ao Dependabot." ;;
+                  *) falha "Repo sem develop: o PR para $BASE vem de feature/CHAVE-N-descricao, bugfix/* ou hotfix/* (veio de $HEAD)." ;;
+                esac
+              else
               case "$HEAD" in
                 develop|release/*) ;;
                 hotfix/*)
@@ -47,7 +63,8 @@ jobs:
                     [[ " $so_develop " == *" $c "* ]] && { falha "hotfix/* tem que sair da $BASE, mas traz commits da develop ($c). Recrie a branch a partir da $BASE."; break; }
                   done ;;
                 *) falha "PR para $BASE so vem de develop, release/* ou hotfix/* (veio de $HEAD). Abra o PR para develop." ;;
-              esac ;;
+              esac
+              fi ;;
             develop)
               case "$HEAD" in
                 feature/*|bugfix/*|hotfix/*|release/*) ;;
